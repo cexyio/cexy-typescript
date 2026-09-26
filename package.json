@@ -1,0 +1,84 @@
+{
+  "name": "@cexyio/cexy",
+  "version": "0.1.0-dev.0",
+  "description": "Official TypeScript/JavaScript SDK for the CEXY.io REST and WebSocket API",
+  "license": "MIT",
+  "author": "CEXY.io",
+  "homepage": "https://cexy.io",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cexyio/cexy-typescript.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cexyio/cexy-typescript/issues"
+  },
+  "keywords": [
+    "cexy",
+    "crypto",
+    "exchange",
+    "trading",
+    "api",
+    "sdk",
+    "websocket"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "generate": "node scripts/generate.mjs",
+    "generate:check": "node scripts/generate.mjs --check",
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:live": "CEXY_LIVE_TESTS=1 vitest run tests/live.test.ts",
+    "scan": "python3 tools/scan_internal.py .",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "ws": "^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "ws": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@types/node": "^20.19.0",
+    "@types/ws": "^8.18.0",
+    "eslint": "^9.39.0",
+    "openapi-typescript": "^7.13.0",
+    "tsup": "^8.5.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.70.0",
+    "vite": "^6.4.0",
+    "vitest": "^3.2.7",
+    "ws": "^8.18.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

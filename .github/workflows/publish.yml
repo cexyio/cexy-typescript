@@ -1,0 +1,80 @@
+name: publish
+# Tag-triggered npm release with trusted publishing (OIDC) and provenance. No NPM_TOKEN or other
+# long-lived secret: configure this repository, this workflow and the `npm` environment as a
+# trusted publisher for @cexyio/cexy on npmjs.com.
+#
+# Two jobs: `build` (no OIDC token) verifies the tag, tests, builds and packs; `publish` (OIDC
+# only, protected `npm` environment) publishes exactly that tarball and does nothing else.
+on:
+  push:
+    tags: ["v*.*.*"]
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run: {working-directory: cexy-typescript}
+    outputs:
+      dist_tag: ${{ steps.meta.outputs.dist_tag }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: {path: cexy-typescript, fetch-depth: 0}
+      - name: Refuse tags whose commit is not on main
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: {repository: cexyio/cexy-api-spec, path: cexy-api-spec}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: {node-version: 22}
+      - name: Tag matches package.json version
+        id: meta
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          test "v${VERSION}" = "${GITHUB_REF_NAME}"
+          case "$VERSION" in *-*) echo "dist_tag=next" >> "$GITHUB_OUTPUT" ;; *) echo "dist_tag=latest" >> "$GITHUB_OUTPUT" ;; esac
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run generate:check
+      - run: npm test
+      - name: No internal references
+        env:
+          SCAN_PATTERNS: ${{ secrets.SCAN_PATTERNS }}
+        run: |
+          printf '%s\n' "$SCAN_PATTERNS" > "$RUNNER_TEMP/scan-patterns.txt"
+          CEXY_SCAN_PATTERNS_FILE="$RUNNER_TEMP/scan-patterns.txt" python3 tools/scan_internal.py .
+      - run: npm run build
+      - name: Pack
+        run: |
+          mkdir -p "$RUNNER_TEMP/pkg"
+          npm pack --pack-destination "$RUNNER_TEMP/pkg"
+          ls -l "$RUNNER_TEMP/pkg"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/pkg/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # OIDC for trusted publishing and provenance
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: {name: npm-package, path: pkg}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: {node-version: 22, registry-url: "https://registry.npmjs.org"}
+      # npm >= 11.5.1 is required for trusted publishing (OIDC); pinned, not "latest".
+      - name: Publish the tarball built above
+        env:
+          DIST_TAG: ${{ needs.build.outputs.dist_tag }}
+        run: npx -y npm@11.6.2 publish pkg/*.tgz --provenance --access public --tag "$DIST_TAG" --ignore-scripts
