@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { CexyApiError, CexyClient } from "../src/index.js";
+import { CLIENT_ERROR_CODES, CexyApiError, CexyClient, isKnownErrorCode } from "../src/index.js";
 import { json, ok, order, testClient, TEST_KEY, TEST_SECRET } from "./helpers.js";
 
 const req = { symbol: "BTC/USDT", side: "buy", type: "limit", price: "60000.00", quantity: "0.001" } as const;
@@ -93,4 +93,9 @@ describe("redirects are never followed (real fetch, two local servers)", () => {
     await expect(call).rejects.toMatchObject({ status: code, code: "UNEXPECTED_REDIRECT" });
     expect(hits).toEqual([]);
   });
+});
+
+it("UNEXPECTED_REDIRECT is exported as a client-side code, not a server code", () => {
+  expect(CLIENT_ERROR_CODES.UNEXPECTED_REDIRECT).toBe("UNEXPECTED_REDIRECT");
+  expect(isKnownErrorCode(CLIENT_ERROR_CODES.UNEXPECTED_REDIRECT)).toBe(false);
 });

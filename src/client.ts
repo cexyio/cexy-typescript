@@ -45,7 +45,12 @@ export interface CexyClientOptions {
   timeoutMs?: number;
   /** Retries after the first attempt for retryable failures. Default 3. */
   maxRetries?: number;
-  /** A `fetch` implementation. Default: the global `fetch` (Node 22+, browsers). */
+  /**
+   * A `fetch` implementation. Default: the global `fetch` (Node 22+, browsers).
+   * It must honour `redirect: "manual"` (the SDK never follows redirects). A fetch that follows
+   * them anyway has already sent the credentials to the redirect target by the time the SDK sees
+   * `response.redirected` and throws `UNEXPECTED_REDIRECT`.
+   */
   fetch?: FetchLike;
   /**
    * Client-side rate limit in requests per minute, or `false` to disable. Default 100/min

@@ -19,6 +19,7 @@ export {
   ValidationError,
   errorFromResponse,
   isKnownErrorCode,
+  CLIENT_ERROR_CODES,
   type CexyApiErrorInit,
   type ErrorBody,
   type ErrorCode,

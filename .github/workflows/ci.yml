@@ -12,10 +12,10 @@ jobs:
       run: {working-directory: cexy-typescript}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {path: cexy-typescript}
+        with: {path: cexy-typescript, persist-credentials: false}
       # The shared spec and conformance cases live in cexy-api-spec, checked out next to this repo.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {repository: cexyio/cexy-api-spec, path: cexy-api-spec}
+        with: {repository: cexyio/cexy-api-spec, path: cexy-api-spec, persist-credentials: false}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with: {node-version: 22, cache: npm, cache-dependency-path: cexy-typescript/package-lock.json}
       - run: npm ci
@@ -54,9 +54,9 @@ jobs:
       run: {working-directory: cexy-typescript}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {path: cexy-typescript}
+        with: {path: cexy-typescript, persist-credentials: false}
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {repository: cexyio/cexy-api-spec, path: cexy-api-spec}
+        with: {repository: cexyio/cexy-api-spec, path: cexy-api-spec, persist-credentials: false}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with: {node-version: "${{ matrix.node }}", cache: npm, cache-dependency-path: cexy-typescript/package-lock.json}
       - run: npm ci

@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `CLIENT_ERROR_CODES` (currently `UNEXPECTED_REDIRECT`): codes the SDK sets itself, which the API never
+  sends.
+
+### Changed
+- Docs: a custom `fetch` must honour `redirect: "manual"` (JSDoc on the `fetch` option and README).
+- CI: every checkout uses `persist-credentials: false`.
+
 ## [0.1.0-dev.3]
 
 ### Security
