@@ -113,3 +113,12 @@ describe("error mapping", () => {
     expect(e.fields).toEqual({ price: "too many decimals" });
   });
 });
+
+describe("known error codes", () => {
+  it("matches every code in the spec's ErrorCode enum", () => {
+    const spec = loadJson<{ components: { schemas: { ErrorCode: { enum: string[] } } } }>("spec/openapi.sdk.json");
+    const codes = spec.components.schemas.ErrorCode.enum;
+    expect(codes.length).toBeGreaterThan(40);
+    expect(codes.filter((c) => !isKnownErrorCode(c))).toEqual([]);
+  });
+});
