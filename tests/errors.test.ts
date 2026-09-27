@@ -3,6 +3,7 @@ import {
   CexyApiError,
   ConflictError,
   ForbiddenError,
+  JurisdictionBlockedError,
   NotFoundError,
   RateLimitError,
   ServerError,
@@ -125,6 +126,8 @@ describe("known error codes", () => {
 
   it("maps JURISDICTION_BLOCKED (HTTP 451) to ForbiddenError", () => {
     const err = errorFromResponse(451, { error: { code: "JURISDICTION_BLOCKED", message: "x", retryable: false } });
-    expect(err).toBeInstanceOf(ForbiddenError);
+    expect(err).toBeInstanceOf(JurisdictionBlockedError);
+    expect(err).toBeInstanceOf(ForbiddenError); // existing ForbiddenError checks still match
+    expect(err.retryable).toBe(false);
   });
 });

@@ -98,6 +98,11 @@ export class CexyApiError extends CexyError {
 export class AuthenticationError extends CexyApiError {}
 /** 403: the key lacks a scope (`FORBIDDEN`), or the route is session-only (`API_KEY_NOT_ALLOWED`). */
 export class ForbiddenError extends CexyApiError {}
+/**
+ * 451: not available in the caller's jurisdiction (`JURISDICTION_BLOCKED`). A `ForbiddenError`
+ * subclass, so existing `instanceof ForbiddenError` checks still match. Retrying will not help.
+ */
+export class JurisdictionBlockedError extends ForbiddenError {}
 /** 404 */
 export class NotFoundError extends CexyApiError {}
 /** 400: the request failed validation; see `fields`. */
@@ -122,7 +127,7 @@ const STATUS_CLASSES: Record<number, typeof CexyApiError> = {
   401: AuthenticationError,
   403: ForbiddenError,
   404: NotFoundError,
-  451: ForbiddenError, // unavailable for legal reasons (JURISDICTION_BLOCKED)
+  451: JurisdictionBlockedError, // unavailable for legal reasons
   409: ConflictError,
   422: UnprocessableError,
 };
@@ -202,6 +207,7 @@ export function errorFromResponse(
   if (status === 429 || init.code === "RATE_LIMITED") {
     return new RateLimitError(init, retryAfterMs(headers, init.details));
   }
+  if (init.code === "JURISDICTION_BLOCKED") return new JurisdictionBlockedError(init);
   if (env && !isKnownErrorCode(env.code)) return new CexyApiError(init);
   if (status >= 500) return new ServerError(init);
   const Cls = STATUS_CLASSES[status] ?? CexyApiError;
