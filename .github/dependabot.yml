@@ -16,4 +16,15 @@ updates:
     groups:
       dev-tools:
         dependency-type: development
+    # Majors held back on purpose (see the dev-tools PR that added this):
+    #   typescript 7: outside the peer ranges of typescript-eslint and openapi-typescript.
+    #   @types/node: tracks the lowest supported Node (engines >=20), not the newest.
+    #   vitest 5: requires Node 22+, and CI still tests Node 20.
+    ignore:
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "vitest"
+        update-types: ["version-update:semver-major"]
     commit-message: {prefix: "deps"}
