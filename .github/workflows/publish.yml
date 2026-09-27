@@ -57,6 +57,10 @@ jobs:
           # Printed so a manually published tarball can be checked against what CI built
           # (the artifact digest covers the zip, not the tgz).
           (cd "$RUNNER_TEMP/pkg" && sha256sum *.tgz | sed 's/^/tarball sha256 /')
+      - name: Dry-run the exact publish command (no upload; catches argument mistakes before approval)
+        env:
+          DIST_TAG: ${{ steps.meta.outputs.dist_tag }}
+        run: npx -y npm@11.6.2 publish "$RUNNER_TEMP"/pkg/*.tgz --dry-run --provenance=false --access public --tag "$DIST_TAG" --ignore-scripts
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: npm-package
@@ -80,4 +84,5 @@ jobs:
       - name: Publish the tarball built above
         env:
           DIST_TAG: ${{ needs.build.outputs.dist_tag }}
-        run: npx -y npm@11.6.2 publish pkg/*.tgz --provenance --access public --tag "$DIST_TAG" --ignore-scripts
+        # "./" matters: npm reads "pkg/x.tgz" as a GitHub user/repo shorthand, not a file.
+        run: npx -y npm@11.6.2 publish ./pkg/*.tgz --provenance --access public --tag "$DIST_TAG" --ignore-scripts

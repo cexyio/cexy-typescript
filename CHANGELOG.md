@@ -6,9 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.1.0-dev.1]
+## [0.1.0-dev.2]
 
-First release published by CI through npm trusted publishing, with provenance.
+First release published by CI through npm trusted publishing, with provenance. Same code as
+0.1.0-dev.1.
+
+### Fixed
+- Publish workflow: the tarball path is `./pkg/*.tgz`, because npm reads `pkg/x.tgz` as a GitHub
+  `user/repo` shorthand. The build job now dry-runs the exact publish command before the
+  environment approval.
+
+## [0.1.0-dev.1] (tagged, not published)
+
+The CI publish failed before upload (the path problem above); nothing reached npm.
 
 ### Added
 - `JurisdictionBlockedError` (a `ForbiddenError` subclass) for `JURISDICTION_BLOCKED` / HTTP 451.
