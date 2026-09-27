@@ -29,6 +29,11 @@ export interface CancelAllUntilDoneResult extends CancelAllResult {
   rounds: number;
   /** `done`: nothing left to retry; otherwise the loop's limit that ended it. */
   stopped: CancelAllStopReason;
+  /**
+   * The error code of the last round when that round failed with a retryable error (e.g.
+   * `RATE_LIMITED`, `SERVICE_UNAVAILABLE`, `CONNECTION_ERROR`); absent when it succeeded.
+   */
+  last_error_code?: string;
 }
 export type Candle = S["CandleResponse"];
 export type CandleInterval = S["CandleInterval"];

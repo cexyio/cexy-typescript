@@ -1,6 +1,6 @@
 {
   "name": "@cexyio/cexy",
-  "version": "0.1.0-dev.4",
+  "version": "0.1.0-dev.5",
   "description": "Official TypeScript/JavaScript SDK for the CEXY.io REST and WebSocket API",
   "license": "MIT",
   "author": "CEXY.io",

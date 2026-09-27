@@ -75,8 +75,12 @@ if (res.stopped !== "done" || res.failed.length) console.warn("left over:", res.
 
 `untilDone` repeats while `has_more` is true or a failure is `INVALID_STATE` / `SERVICE_UNAVAILABLE`.
 After a call without progress it waits 1, 2, 4, 8, then 15 s, and it stops after `maxRounds` calls
-(default 20) or before a wait would pass `timeBudgetMs` (default 120 000). The server allows 30 cancel-all
-calls per minute per account; a 429 is retried after its Retry-After, which counts against the budget.
+(default 20) or before a wait would pass `timeBudgetMs` (default 120 000). Every round is exactly one
+request (the loop owns the retries, so it never sends more than `maxRounds` requests): a 429 round waits its
+Retry-After, which counts against the budget; another retryable error (5xx, network) takes the next backoff
+step; a wait that would pass the budget ends the loop with `stopped: "time_budget"` and `last_error_code`.
+A non-retryable error (e.g. a key without the trade scope) throws `CancelAllInterruptedError` with the error
+and the partial result. The server allows 30 cancel-all calls per minute per account.
 
 Give both `apiKey` and `apiSecret`, or neither: passing only one throws at construction.
 
@@ -145,10 +149,13 @@ try {
 
 - Timeout per attempt: `timeoutMs` (default 10 s). Retries: `maxRetries` (default 3), exponential backoff with full jitter.
 - Retried: network errors, timeouts and responses with `retryable: true`.
-- 429 waits at least `Retry-After` / `details.retry_after_seconds`.
+- 429 waits at least `Retry-After` / `details.retry_after_seconds`. Server wait hints are untrusted: unusable
+  values are ignored, and a hint longer than 120 s (`MAX_SERVER_WAIT_MS`) is never waited: the call fails at
+  once with `RateLimitError`, whose `retryAfterMs` still has the server's value. The client-side rate limiter
+  never blocks longer than 120 s because of a server hint.
 - GETs retry freely.
-- **Orders:** safety rests on `client_order_id`, not on `Idempotency-Key` (the server does not honour
-  that header on `POST /trading/orders`, order cancels or cancel-all). `placeOrder` always sends a
+- **Orders:** safety rests on `client_order_id`. The server does not honour `Idempotency-Key` on
+  `POST /trading/orders`, order cancels or cancel-all, so the SDK does not send it there. `placeOrder` always sends a
   `client_order_id` (a UUID if you do not set one); it is unique per account and a repeat is refused
   before any funds move. After an ambiguous failure (network error, timeout, 5xx) the SDK first looks the
   order up by that id. If the order exists it is returned with `recovered: true`; only if it does not
@@ -157,9 +164,9 @@ try {
 - **Cancels:** `cancelOrder` retries network errors; if a *retry* gets `INVALID_STATE`, the first attempt
   already cancelled the order, so the SDK fetches and returns it. `cancelAll` is naturally repeatable and
   is retried the same way (a retry reports only what it cancelled).
-- **Pool join/exit** send an auto-generated `Idempotency-Key`, reused on every retry; the server honours
-  it there, so they execute once. A 409 `CONCURRENT_MODIFICATION` (the same key still in flight) is
-  retried with the same key. Pass `{ idempotencyKey }` to control it yourself.
+- **Pool join/exit** are the only requests that send an `Idempotency-Key` (auto-generated, reused on every
+  retry); the server honours it there, so they execute once. A 409 `CONCURRENT_MODIFICATION` (the same key
+  still in flight) is retried with the same key. Pass `{ idempotencyKey }` to control it yourself.
 - `onRetry` lets you log retries.
 
 Every method takes a last `RequestOptions` argument: `{ signal, timeoutMs, maxRetries, idempotencyKey }`.

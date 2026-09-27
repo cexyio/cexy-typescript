@@ -13,6 +13,8 @@ export {
   InvalidAmountError,
   NotFoundError,
   OrderStateUnknownError,
+  CancelAllInterruptedError,
+  MAX_SERVER_WAIT_MS,
   RateLimitError,
   ServerError,
   UnprocessableError,

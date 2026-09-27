@@ -6,6 +6,7 @@ import {
   CexyConnectionError,
   CexyError,
   CexyTimeoutError,
+  MAX_SERVER_WAIT_MS,
   RateLimitError,
   errorFromResponse,
   retryAfterMs,
@@ -24,10 +25,10 @@ export interface RequestOptions {
   /** Overrides the client's `maxRetries`. */
   maxRetries?: number;
   /**
-   * Mutations only: the `Idempotency-Key` to send. Generated automatically when absent.
-   * The server honours it on pool join/exit; set it yourself to make a retry across process
-   * restarts safe there. Orders and cancels do NOT honour it: their safety comes from
-   * `client_order_id` (see `placeOrder`).
+   * Pool join/exit only: the `Idempotency-Key` to send (generated automatically when absent,
+   * and reused on every retry). The server honours it there; set it yourself to make a retry
+   * across process restarts safe. No other request sends the header: orders and cancels do
+   * not honour it, and their safety comes from `client_order_id` (see `placeOrder`).
    */
   idempotencyKey?: string;
 }
@@ -74,6 +75,9 @@ export interface RawResponse {
   data: unknown;
 }
 
+/** Operations on which the server honours `Idempotency-Key`: the only ones that send it. */
+const IDEMPOTENT_OPS: ReadonlySet<OperationId> = new Set<OperationId>(["join_pool", "exit_pool"]);
+
 const BACKOFF_BASE_MS = 500;
 const BACKOFF_MAX_MS = 10_000;
 
@@ -85,16 +89,15 @@ export class Transport {
   }
 
   /**
-   * Sends a request with the standard retry policy: GETs retry on retryable errors and
-   * network failures. Mutations carry an `Idempotency-Key` reused on every attempt; the server
-   * honours it on pool join/exit, which makes their retries safe. The other mutations routed
-   * here (cancel-all) are naturally repeatable. `placeOrder` and `cancelOrder` use
+   * Sends a request with the standard retry policy: retryable errors and network failures are
+   * retried. Pool join/exit carry an `Idempotency-Key` reused on every attempt (the server
+   * honours it there, which makes their retries safe); the other mutations routed here
+   * (cancel-all) are naturally repeatable and send no key. `placeOrder` and `cancelOrder` use
    * `attempt()` with their own policies.
    */
   async request(spec: CallSpec, opts: RequestOptions = {}): Promise<RawResponse> {
     const info = OPERATIONS[spec.op];
-    const isMutation = info.method !== "GET";
-    const idempotencyKey = isMutation ? (spec.idempotencyKey ?? opts.idempotencyKey ?? newId()) : undefined;
+    const idempotencyKey = IDEMPOTENT_OPS.has(spec.op) ? (spec.idempotencyKey ?? opts.idempotencyKey ?? newId()) : undefined;
     const maxRetries = opts.maxRetries ?? this.config.maxRetries;
     for (let attempt = 0; ; attempt++) {
       try {
@@ -106,7 +109,10 @@ export class Transport {
     }
   }
 
-  /** Waits before retry number `attempt + 1`, honouring server hints. */
+  /**
+   * Waits before retry number `attempt + 1`, honouring server hints. A server hint longer than
+   * `MAX_SERVER_WAIT_MS` is not waited: `err` is thrown at once (it still carries the hint).
+   */
   async backoff(
     op: OperationId,
     info: OperationInfo,
@@ -115,6 +121,8 @@ export class Transport {
     idempotencyKey: string | undefined,
     signal?: AbortSignal,
   ): Promise<void> {
+    const hint = serverHintMs(err);
+    if (hint !== null && hint > MAX_SERVER_WAIT_MS) throw err;
     const delayMs = this.retryDelay(attempt, err);
     this.config.onRetry?.({
       operation: op,
@@ -130,8 +138,8 @@ export class Transport {
 
   /** Full-jitter exponential backoff, or the server's hint plus a little jitter. */
   retryDelay(attempt: number, err: unknown): number {
-    const hint = err instanceof RateLimitError ? err.retryAfterMs : err instanceof CexyApiError ? retryAfterMs(undefined, err.details) : null;
-    if (hint !== null && hint > 0) return Math.ceil(hint + this.config.random() * 250);
+    const hint = serverHintMs(err);
+    if (hint !== null && hint > 0 && hint <= MAX_SERVER_WAIT_MS) return Math.ceil(hint + this.config.random() * 250);
     const cap = Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** attempt);
     return Math.ceil(this.config.random() * cap);
   }
@@ -147,7 +155,7 @@ export class Transport {
       body = JSON.stringify(spec.body);
       headers.set("Content-Type", "application/json");
     }
-    if (info.method !== "GET" && spec.idempotencyKey) headers.set("Idempotency-Key", spec.idempotencyKey);
+    if (IDEMPOTENT_OPS.has(spec.op) && spec.idempotencyKey) headers.set("Idempotency-Key", spec.idempotencyKey);
 
     if (info.auth === "api_key") {
       const auth = this.config.authenticator;
@@ -244,6 +252,13 @@ export class Transport {
   redact(text: string): string {
     return this.config.authenticator ? this.config.authenticator.redact(text) : text;
   }
+}
+
+/** The server's wait hint on an error, in ms (null when it gave none or none is usable). */
+export function serverHintMs(err: unknown): number | null {
+  if (err instanceof RateLimitError) return err.retryAfterMs;
+  if (err instanceof CexyApiError) return retryAfterMs(undefined, err.details);
+  return null;
 }
 
 /** Retryable = a network failure/timeout, or an API error with `retryable: true` (incl. 409 CONCURRENT_MODIFICATION). */

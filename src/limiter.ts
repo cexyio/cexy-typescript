@@ -4,6 +4,9 @@
  * key; this keeps a margin). It adapts to `X-RateLimit-Limit`, `X-RateLimit-Remaining` and
  * `X-RateLimit-Reset` when the server sends them, and to 429 `Retry-After`.
  */
+/** Longest block any server hint can impose on the limiter (mirrors `MAX_SERVER_WAIT_MS`). */
+const MAX_BLOCK_MS = 120_000;
+
 export interface RateLimiterOptions {
   requestsPerMinute: number;
   /** @internal for tests */
@@ -54,7 +57,7 @@ export class RateLimiter {
         return;
       }
       const msPerToken = 60_000 / this.#rpm;
-      await this.#sleep(Math.ceil((1 - this.#tokens) * msPerToken), signal);
+      await this.#sleep(Math.min(MAX_BLOCK_MS, Math.ceil((1 - this.#tokens) * msPerToken)), signal);
     }
   }
 
@@ -62,7 +65,8 @@ export class RateLimiter {
   update(headers: Headers): void {
     this.#refill();
     const limit = num(headers.get("x-ratelimit-limit"));
-    if (limit !== null && limit > 0 && limit < this.#rpm) {
+    // Below one request a minute a server limit is not credible; ignore it.
+    if (limit !== null && limit >= 1 && limit < this.#rpm) {
       this.#rpm = limit;
       this.#tokens = Math.min(this.#tokens, limit);
     }
@@ -75,10 +79,13 @@ export class RateLimiter {
     }
   }
 
-  /** Blocks all requests for `ms` (used for 429 Retry-After). */
+  /**
+   * Blocks all requests for `ms` (used for 429 Retry-After and `X-RateLimit-Reset`). Server
+   * hints are untrusted: non-finite values are ignored and the block is capped at 120 s.
+   */
   blockFor(ms: number): void {
-    if (!(ms > 0)) return;
-    this.#blockedUntil = Math.max(this.#blockedUntil, this.#now() + ms);
+    if (!(ms > 0) || !Number.isFinite(ms)) return;
+    this.#blockedUntil = Math.max(this.#blockedUntil, this.#now() + Math.min(ms, MAX_BLOCK_MS));
   }
 
   #refill(): void {

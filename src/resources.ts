@@ -1,6 +1,17 @@
 import type { operations } from "./generated/schema.js";
 import { assertAmountFields } from "./amounts.js";
-import { CexyApiError, CexyConfigError, ConflictError, NotFoundError, OrderStateUnknownError } from "./errors.js";
+import {
+  CancelAllInterruptedError,
+  CexyApiError,
+  CexyConfigError,
+  CexyConnectionError,
+  CexyTimeoutError,
+  ConflictError,
+  MAX_SERVER_WAIT_MS,
+  NotFoundError,
+  OrderStateUnknownError,
+  RateLimitError,
+} from "./errors.js";
 import { isAmbiguous, isRetryable, newId, type CallSpec, type RequestOptions, type Transport } from "./http.js";
 import { OPERATIONS } from "./operations.js";
 import { paginate, type IterateOptions } from "./pagination.js";
@@ -268,6 +279,14 @@ const CANCEL_RETRY_CODES = new Set(["INVALID_STATE", "SERVICE_UNAVAILABLE"]);
 /** Waits after rounds without progress, in seconds; the last value repeats. */
 const CANCEL_BACKOFF_S = [1, 2, 4, 8, 15];
 
+/** A short code for a retryable failure, for `last_error_code`. */
+function errorCode(err: unknown): string {
+  if (err instanceof CexyApiError) return err.code;
+  if (err instanceof CexyTimeoutError) return "TIMEOUT";
+  if (err instanceof CexyConnectionError) return "CONNECTION_ERROR";
+  return "ERROR";
+}
+
 const ORDER_AMOUNT_FIELDS = ["price", "quantity", "quote_quantity", "stop_price"] as const;
 
 export class TradingResource extends Resource {
@@ -300,7 +319,7 @@ export class TradingResource extends Resource {
    *
    * Retry safety rests on `client_order_id` (generated as a UUID when absent): it is unique
    * per account and the server refuses a repeat before any funds move. The server does NOT
-   * honour `Idempotency-Key` on orders (the header is sent but gives no protection). After an
+   * honour `Idempotency-Key` on orders, so none is sent. After an
    * ambiguous failure (network error, timeout or 5xx) the SDK first looks the order up by
    * `client_order_id` and returns it if it exists (`recovered: true`); only if it does not
    * exist does it send the order again, with the same `client_order_id`, so a late-arriving
@@ -315,13 +334,12 @@ export class TradingResource extends Resource {
     assertAmountFields(order, ORDER_AMOUNT_FIELDS, "placeOrder");
     const clientOrderId = order.client_order_id ?? newId();
     const body: PlaceOrderRequest = { ...order, client_order_id: clientOrderId };
-    const idempotencyKey = opts.idempotencyKey ?? newId();
     const maxRetries = opts.maxRetries ?? this.t.config.maxRetries;
     const info = OPERATIONS.place_order;
 
     for (let attempt = 0; ; attempt++) {
       try {
-        const raw = await this.t.attempt({ op: "place_order", body, idempotencyKey }, opts);
+        const raw = await this.t.attempt({ op: "place_order", body }, opts);
         const data = (raw.data as { data: PlaceOrderResponse }).data;
         return { ...data, client_order_id: clientOrderId, recovered: false };
       } catch (err) {
@@ -332,12 +350,12 @@ export class TradingResource extends Resource {
           const existing = await this.#lookup(clientOrderId, err, opts);
           if (existing) return { order: existing, fills: [], client_order_id: clientOrderId, recovered: true };
           if (duplicateAfterRetry || attempt >= maxRetries) throw err;
-          await this.t.backoff("place_order", info, attempt, err, idempotencyKey, opts.signal);
+          await this.t.backoff("place_order", info, attempt, err, undefined, opts.signal);
           continue;
         }
         // Definitive refusals that did not execute (e.g. 429): resend with the same client_order_id.
         if (isRetryable(err) && attempt < maxRetries) {
-          await this.t.backoff("place_order", info, attempt, err, idempotencyKey, opts.signal);
+          await this.t.backoff("place_order", info, attempt, err, undefined, opts.signal);
           continue;
         }
         throw err;
@@ -363,10 +381,9 @@ export class TradingResource extends Resource {
   async cancelOrder(orderId: string, opts: RequestOptions = {}): Promise<Order> {
     const maxRetries = opts.maxRetries ?? this.t.config.maxRetries;
     const info = OPERATIONS.cancel_order;
-    const idempotencyKey = opts.idempotencyKey ?? newId(); // sent, but not honoured for cancels
     for (let attempt = 0; ; attempt++) {
       try {
-        const raw = await this.t.attempt({ op: "cancel_order", pathParams: { order_id: orderId }, idempotencyKey }, opts);
+        const raw = await this.t.attempt({ op: "cancel_order", pathParams: { order_id: orderId } }, opts);
         return (raw.data as { data: Order }).data;
       } catch (err) {
         if (opts.signal?.aborted) throw err;
@@ -374,7 +391,7 @@ export class TradingResource extends Resource {
           return this.order(orderId, { signal: opts.signal, timeoutMs: opts.timeoutMs });
         }
         if (isRetryable(err) && attempt < maxRetries) {
-          await this.t.backoff("cancel_order", info, attempt, err, idempotencyKey, opts.signal);
+          await this.t.backoff("cancel_order", info, attempt, err, undefined, opts.signal);
           continue;
         }
         throw err;
@@ -399,10 +416,18 @@ export class TradingResource extends Resource {
    * waits 1, 2, 4, 8 and then 15 s, starting over after any progress. It stops after
    * `maxRounds` calls or before a wait would pass `timeBudgetMs`, and returns the merged
    * result with `rounds` and `stopped`. Other failure codes are returned, never retried.
+   * In this mode every round is exactly one HTTP request (the loop owns the retries, so it
+   * never sends more than `maxRounds` requests): a 429 round waits the server's Retry-After
+   * (without advancing the backoff), another retryable error (5xx, network) takes the next
+   * backoff step, and a wait that would pass the budget ends the loop with
+   * `stopped: "time_budget"` and `last_error_code`. A non-retryable error (e.g. a key without
+   * the trade scope) throws `CancelAllInterruptedError`, which carries the error and the
+   * partial result.
    *
-   * The server allows 30 cancel-all calls per minute per account (a 429 is retried after its
-   * Retry-After). The call is naturally repeatable and needs no Idempotency-Key, so it is
-   * retried after network errors; a retry reports only what that retry did.
+   * The server allows 30 cancel-all calls per minute per account. A single call (without
+   * `untilDone`) follows the normal retry policy: a 429 is retried after its Retry-After (up to
+   * 120 s; a longer one fails at once) and network errors are retried, since the call is
+   * naturally repeatable; a retry reports only what that retry did. No Idempotency-Key is sent.
    */
   cancelAll(params: CancelAllParams & { untilDone: true }, opts?: RequestOptions): Promise<CancelAllUntilDoneResult>;
   cancelAll(params: CancelAllParams, opts?: RequestOptions): Promise<CancelAllResult>;
@@ -413,7 +438,7 @@ export class TradingResource extends Resource {
     if (typeof symbol === "string" && symbol !== "") body = { symbol };
     else if (hasSymbol && symbol === null) body = {};
     else throw new CexyConfigError('cancelAll(): pass { symbol: "BASE/QUOTE" }, or { symbol: null } to cancel in every market');
-    const once = () => this.data<CancelAllResult>({ op: "cancel_all", body }, opts);
+    const once = (o?: RequestOptions) => this.data<CancelAllResult>({ op: "cancel_all", body }, o ?? opts);
     if (params.untilDone !== true) return once();
 
     const maxRounds = params.maxRounds ?? 20;
@@ -423,47 +448,84 @@ export class TradingResource extends Resource {
     const now = this.t.config.now ?? Date.now;
     const start = now();
     const state = new Map<string, { list: "cancelled" | "already_closed" | "failed"; failure?: CancelFailure }>();
+    // Each round is exactly one HTTP request: the loop owns the retries, so it never sends more
+    // than maxRounds requests and never waits past the budget.
+    const roundOpts: RequestOptions = { ...opts, maxRetries: 0 };
     let rounds = 0;
     let idle = 0;
-    let last: CancelAllResult;
+    let hasMore = false;
+    let lastErrorCode: string | undefined;
     let stopped: CancelAllUntilDoneResult["stopped"];
+    const result = (): CancelAllUntilDoneResult => {
+      const pick = (list: string) => [...state].filter(([, v]) => v.list === list).map(([id]) => id);
+      return {
+        cancelled: pick("cancelled"),
+        already_closed: pick("already_closed"),
+        failed: pick("failed"),
+        failures: [...state.values()].flatMap((v) => (v.list === "failed" && v.failure ? [v.failure] : [])),
+        has_more: hasMore,
+        rounds,
+        stopped,
+        ...(lastErrorCode !== undefined ? { last_error_code: lastErrorCode } : {}),
+      };
+    };
     for (;;) {
-      last = await once();
-      rounds++;
-      const failures = last.failures ?? [];
-      for (const id of last.cancelled ?? []) state.set(id, { list: "cancelled" });
-      for (const id of last.already_closed ?? []) state.set(id, { list: "already_closed" });
-      for (const id of last.failed ?? []) {
-        const failure = failures.find((f) => f.order_id === id);
-        state.set(id, failure ? { list: "failed", failure } : { list: "failed" });
-      }
-      const progress = (last.cancelled?.length ?? 0) + (last.already_closed?.length ?? 0) > 0;
-      if (!last.has_more && !failures.some((f) => CANCEL_RETRY_CODES.has(f.code))) {
-        stopped = "done";
-        break;
-      }
-      if (rounds >= maxRounds) {
-        stopped = "max_rounds";
-        break;
-      }
       let waitMs = 0;
-      if (progress) idle = 0;
-      else waitMs = (CANCEL_BACKOFF_S[Math.min(idle++, CANCEL_BACKOFF_S.length - 1)] ?? 15) * 1000;
+      let res: CancelAllResult | undefined;
+      try {
+        res = await once(roundOpts);
+      } catch (err) {
+        rounds++;
+        if (opts?.signal?.aborted) throw err;
+        if (!isRetryable(err)) {
+          stopped = "done";
+          throw new CancelAllInterruptedError(err, result());
+        }
+        lastErrorCode = errorCode(err);
+        if (rounds >= maxRounds) {
+          stopped = "max_rounds";
+          break;
+        }
+        const hint = err instanceof RateLimitError ? err.retryAfterMs : null;
+        if (hint !== null) {
+          waitMs = hint; // exactly the server's wait; the backoff does not advance
+          if (hint > MAX_SERVER_WAIT_MS) {
+            stopped = "time_budget";
+            break;
+          }
+        } else {
+          waitMs = (CANCEL_BACKOFF_S[Math.min(idle++, CANCEL_BACKOFF_S.length - 1)] ?? 15) * 1000;
+        }
+      }
+      if (res) {
+        rounds++;
+        lastErrorCode = undefined;
+        hasMore = res.has_more;
+        const failures = res.failures ?? [];
+        for (const id of res.cancelled ?? []) state.set(id, { list: "cancelled" });
+        for (const id of res.already_closed ?? []) state.set(id, { list: "already_closed" });
+        for (const id of res.failed ?? []) {
+          const failure = failures.find((f) => f.order_id === id);
+          state.set(id, failure ? { list: "failed", failure } : { list: "failed" });
+        }
+        const progress = (res.cancelled?.length ?? 0) + (res.already_closed?.length ?? 0) > 0;
+        if (!res.has_more && !failures.some((f) => CANCEL_RETRY_CODES.has(f.code))) {
+          stopped = "done";
+          break;
+        }
+        if (rounds >= maxRounds) {
+          stopped = "max_rounds";
+          break;
+        }
+        if (progress) idle = 0;
+        else waitMs = (CANCEL_BACKOFF_S[Math.min(idle++, CANCEL_BACKOFF_S.length - 1)] ?? 15) * 1000;
+      }
       if (now() - start + waitMs >= budgetMs) {
         stopped = "time_budget";
         break;
       }
       if (waitMs > 0) await this.t.config.sleep(waitMs, opts?.signal);
     }
-    const pick = (list: string) => [...state].filter(([, v]) => v.list === list).map(([id]) => id);
-    return {
-      cancelled: pick("cancelled"),
-      already_closed: pick("already_closed"),
-      failed: pick("failed"),
-      failures: [...state.values()].flatMap((v) => (v.list === "failed" && v.failure ? [v.failure] : [])),
-      has_more: last.has_more,
-      rounds,
-      stopped,
-    };
+    return result();
   }
 }
