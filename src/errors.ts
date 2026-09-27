@@ -122,6 +122,7 @@ const STATUS_CLASSES: Record<number, typeof CexyApiError> = {
   401: AuthenticationError,
   403: ForbiddenError,
   404: NotFoundError,
+  451: ForbiddenError, // unavailable for legal reasons (JURISDICTION_BLOCKED)
   409: ConflictError,
   422: UnprocessableError,
 };

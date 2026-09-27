@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CexyApiError,
   ConflictError,
+  ForbiddenError,
   NotFoundError,
   RateLimitError,
   ServerError,
@@ -120,5 +121,10 @@ describe("known error codes", () => {
     const codes = spec.components.schemas.ErrorCode.enum;
     expect(codes.length).toBeGreaterThan(40);
     expect(codes.filter((c) => !isKnownErrorCode(c))).toEqual([]);
+  });
+
+  it("maps JURISDICTION_BLOCKED (HTTP 451) to ForbiddenError", () => {
+    const err = errorFromResponse(451, { error: { code: "JURISDICTION_BLOCKED", message: "x", retryable: false } });
+    expect(err).toBeInstanceOf(ForbiddenError);
   });
 });
