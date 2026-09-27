@@ -145,7 +145,15 @@ const KNOWN_CODES: ReadonlySet<string> = new Set<KnownErrorCode>([
   "UNDER_MAINTENANCE", "ENGINE_OVERLOADED",
 ]);
 
-/** True for codes listed in errors.yaml. */
+/**
+ * Codes the SDK itself sets on a `CexyApiError`; the API never sends them, so they are not in
+ * errors.yaml and `isKnownErrorCode()` returns false for them.
+ * - `UNEXPECTED_REDIRECT`: the server answered with a 3xx. The SDK never follows redirects (the
+ *   credentials would go to the redirect target); not retryable.
+ */
+export const CLIENT_ERROR_CODES = { UNEXPECTED_REDIRECT: "UNEXPECTED_REDIRECT" } as const;
+
+/** True for codes listed in errors.yaml (server codes; see `CLIENT_ERROR_CODES` for the SDK's own). */
 export function isKnownErrorCode(code: string): code is KnownErrorCode {
   return KNOWN_CODES.has(code);
 }

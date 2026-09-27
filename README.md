@@ -110,7 +110,7 @@ Every API failure throws a `CexyApiError` (or a subclass) with `status`, `code`,
 | `UnprocessableError` | 422: `INSUFFICIENT_FUNDS`, `MARKET_UNAVAILABLE`, ... |
 | `RateLimitError` | 429, with `retryAfterMs` |
 | `ServerError` | 5xx |
-| `CexyApiError` | any code this SDK version does not know yet |
+| `CexyApiError` | any code this SDK version does not know yet, and `UNEXPECTED_REDIRECT` (the server answered with a 3xx; set by the SDK, see `CLIENT_ERROR_CODES`) |
 
 Local problems use `CexyConfigError`, `InvalidAmountError`, `CexyConnectionError` / `CexyTimeoutError`
 and `OrderStateUnknownError`. `ErrorCode` is a union of the known codes plus `string`, because new codes
@@ -231,7 +231,8 @@ endpoints from a server. Browsers do not let scripts set `User-Agent`, so the SD
   `http://` / `ws://` solely for `localhost`, `127.0.0.1` or `::1` (local test servers).
 - The SDK **never follows HTTP redirects**. A 3xx answer throws a `CexyApiError` with code
   `UNEXPECTED_REDIRECT` (not retried), so credentials are never re-sent to another host and an order
-  is never re-posted to a redirect target. If you pass your own `fetch`, it must honour `redirect: "manual"`.
+  is never re-posted to a redirect target. If you pass your own `fetch`, it must honour `redirect: "manual"`: one that follows redirects
+  anyway has already sent your credentials by the time the SDK notices.
 - The SDK redacts the secret from `toString()`, `util.inspect`, `JSON.stringify` and error messages.
 - Keep keys in environment variables or a secret manager, not in code.
 

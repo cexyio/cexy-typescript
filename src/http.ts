@@ -1,6 +1,7 @@
 import type { Authenticator } from "./auth.js";
 import {
   CexyApiError,
+  CLIENT_ERROR_CODES,
   CexyConfigError,
   CexyConnectionError,
   CexyError,
@@ -198,7 +199,7 @@ export class Transport {
     if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400) || res.redirected) {
       throw new CexyApiError({
         status: res.status,
-        code: "UNEXPECTED_REDIRECT",
+        code: CLIENT_ERROR_CODES.UNEXPECTED_REDIRECT,
         message: `${info.method} ${info.path}: the server answered with a redirect (HTTP ${res.status}); the SDK does not follow redirects. Check baseUrl.`,
         retryable: false,
       });
