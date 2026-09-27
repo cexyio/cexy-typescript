@@ -58,6 +58,22 @@ export class OrderStateUnknownError extends CexyError {
   }
 }
 
+/**
+ * A `cancelAll({ ..., untilDone: true })` loop hit an error it does not retry (for example
+ * `ForbiddenError` for a key without the trade scope). `error` is that error; `partial` is what
+ * the earlier rounds did, in the same shape as the loop's normal result.
+ */
+export class CancelAllInterruptedError extends CexyError {
+  readonly error: unknown;
+  readonly partial: import("./types.js").CancelAllUntilDoneResult;
+  constructor(error: unknown, partial: import("./types.js").CancelAllUntilDoneResult) {
+    const what = error instanceof CexyApiError ? `${error.code}: ${error.message}` : String(error);
+    super(`cancelAll stopped after ${partial.rounds} round(s): ${what}`, { cause: error });
+    this.error = error;
+    this.partial = partial;
+  }
+}
+
 export interface CexyApiErrorInit {
   status: number;
   code: ErrorCode;
@@ -160,21 +176,34 @@ export function isKnownErrorCode(code: string): code is KnownErrorCode {
 
 const DEFAULT_RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 
-/** Parses `Retry-After` (seconds or HTTP date) and `details.retry_after_seconds`; returns ms. */
+/**
+ * The longest wait the SDK accepts from a server hint (`Retry-After`, `retry_after_seconds`,
+ * `X-RateLimit-Reset`): 120 s. A longer hint is never waited; the call fails at once instead
+ * (see `Transport.backoff`), and the client-side rate limiter caps its block at this value.
+ */
+export const MAX_SERVER_WAIT_MS = 120_000;
+
+/**
+ * Parses `Retry-After` (seconds or HTTP date) and `details.retry_after_seconds`; returns ms,
+ * or null when neither is usable. The values are untrusted: unparseable, negative or
+ * non-finite values are ignored. A usable value may exceed `MAX_SERVER_WAIT_MS`; callers
+ * decide (the transport then fails fast instead of waiting).
+ */
 export function retryAfterMs(headers: Headers | undefined, details: Record<string, unknown> | undefined): number | null {
   let best: number | null = null;
-  const h = headers?.get("retry-after");
+  const h = headers?.get("retry-after")?.trim();
   if (h) {
-    const secs = Number(h);
-    if (Number.isFinite(secs)) best = Math.max(0, secs * 1000);
-    else {
+    if (/^\d+(\.\d+)?$/.test(h)) {
+      const ms = Number(h) * 1000;
+      if (Number.isFinite(ms)) best = ms;
+    } else if (/[a-z]/i.test(h)) {
       const at = Date.parse(h);
-      if (!Number.isNaN(at)) best = Math.max(0, at - Date.now());
+      if (Number.isFinite(at)) best = Math.max(0, at - Date.now());
     }
   }
   const d = details?.["retry_after_seconds"];
-  const ds = typeof d === "number" ? d : typeof d === "string" ? Number(d) : NaN;
-  if (Number.isFinite(ds)) best = Math.max(best ?? 0, ds * 1000);
+  const ds = typeof d === "number" ? d : typeof d === "string" && /^\d+(\.\d+)?$/.test(d.trim()) ? Number(d) : NaN;
+  if (Number.isFinite(ds) && ds >= 0 && Number.isFinite(ds * 1000)) best = Math.max(best ?? 0, ds * 1000);
   return best;
 }
 

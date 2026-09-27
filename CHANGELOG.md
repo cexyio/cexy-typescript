@@ -6,6 +6,28 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-dev.5]
+
+### Fixed
+- **Server-controlled waits are bounded.** `Retry-After`, `details.retry_after_seconds` and
+  `X-RateLimit-Reset` are treated as untrusted: unparseable, negative or non-finite values are ignored, a
+  hint longer than 120 s (`MAX_SERVER_WAIT_MS`, exported) is never waited (the call fails at once with
+  `RateLimitError`, which still carries the server's value), and the client-side rate limiter never blocks
+  longer than 120 s or adopts a limit below one request a minute. Before, a `Retry-After: 86400` stalled
+  the call and the shared limiter for a day.
+- **`cancelAll({ untilDone: true })` owns its retries.** Each round is exactly one request, so the loop
+  never sends more than `maxRounds` requests (before, each round could retry 3 times). A 429 round waits
+  its Retry-After exactly, other retryable errors take the next backoff step, and a wait past
+  `timeBudgetMs` is not taken: the loop stops with `stopped: "time_budget"` and the new
+  `last_error_code`. A non-retryable error throws the new `CancelAllInterruptedError`, which carries the
+  error and the partial result.
+
+### Changed
+- `Idempotency-Key` is sent only on pool join/exit, where the server honours it. Orders, cancels and
+  cancel-all no longer send it (the server ignored it there); their safety is unchanged
+  (`client_order_id` and the cancel rules).
+
+
 ## [0.1.0-dev.4]
 
 ### Added

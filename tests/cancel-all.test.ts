@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CexyClient, NotFoundError } from "../src/index.js";
+import { CancelAllInterruptedError, CexyClient, ForbiddenError, NotFoundError } from "../src/index.js";
 import { json, loadJson, mockFetch, ok, TEST_KEY, TEST_SECRET, type Reply } from "./helpers.js";
 
 interface Case {
@@ -10,11 +10,14 @@ interface Case {
   expect: {
     calls: number;
     sleeps_s: number[];
-    stopped: string;
-    cancelled: string[];
-    already_closed: string[];
-    failed: string[];
-    failure_codes: Record<string, string>;
+    stopped?: string;
+    cancelled?: string[];
+    already_closed?: string[];
+    failed?: string[];
+    failure_codes?: Record<string, string>;
+    last_error_code?: string;
+    error_code?: string;
+    partial_cancelled?: string[];
   };
 }
 
@@ -49,30 +52,55 @@ const pending = (ids: string[], code = "INVALID_STATE") => ({
   failures: ids.map((order_id) => ({ order_id, code, message: "still being placed" })),
 });
 
+/** A conformance response item: a `data` object (200), or an error with `http_status`. */
+function reply(r: Record<string, unknown>): Response {
+  if (typeof r["http_status"] === "number") {
+    return json(r["http_status"], { error: r["error"] }, (r["headers"] as Record<string, string> | undefined) ?? {});
+  }
+  return round(r);
+}
+
 describe("cancelAll untilDone: shared conformance cases", () => {
   it.each(conformance.cases.map((c) => [c.id, c] as const))("%s", async (_id, c) => {
     const last = c.responses[c.responses.length - 1]!;
     const { client, calls, sleeps } = clockedClient(
-      c.responses.map((r) => round(r)),
-      c.responses_repeat_last ? () => round(last) : undefined,
+      c.responses.map((r) => reply(r)),
+      c.responses_repeat_last ? () => reply(last) : undefined,
     );
-    const out = await client.trading.cancelAll({
+    const run = client.trading.cancelAll({
       symbol: null,
       untilDone: true,
       ...(c.options?.max_rounds !== undefined ? { maxRounds: c.options.max_rounds } : {}),
       ...(c.options?.time_budget_s !== undefined ? { timeBudgetMs: c.options.time_budget_s * 1000 } : {}),
     });
-    expect(calls.length).toBe(c.expect.calls);
-    expect(out.rounds).toBe(c.expect.calls);
-    expect(sleeps).toEqual(c.expect.sleeps_s.map((s) => s * 1000));
-    expect(out.stopped).toBe(c.expect.stopped);
-    expect(new Set(out.cancelled)).toEqual(new Set(c.expect.cancelled));
-    expect(new Set(out.already_closed)).toEqual(new Set(c.expect.already_closed));
-    expect(new Set(out.failed)).toEqual(new Set(c.expect.failed));
-    expect(Object.fromEntries(out.failures.map((f) => [f.order_id, f.code]))).toEqual(c.expect.failure_codes);
+    const e = c.expect;
+    if (e.error_code) {
+      const err = await run.then(
+        () => null,
+        (x: unknown) => x,
+      );
+      expect(err).toBeInstanceOf(CancelAllInterruptedError);
+      const ie = err as CancelAllInterruptedError;
+      expect((ie.error as { code?: string }).code).toBe(e.error_code);
+      expect(new Set(ie.partial.cancelled)).toEqual(new Set(e.partial_cancelled ?? []));
+      expect(calls.length).toBe(e.calls);
+      expect(sleeps).toEqual(e.sleeps_s.map((s) => s * 1000));
+      return;
+    }
+    const out = await run;
+    expect(calls.length).toBe(e.calls);
+    expect(out.rounds).toBe(e.calls);
+    expect(sleeps).toEqual(e.sleeps_s.map((s) => s * 1000));
+    expect(out.stopped).toBe(e.stopped);
+    expect(new Set(out.cancelled)).toEqual(new Set(e.cancelled));
+    expect(new Set(out.already_closed)).toEqual(new Set(e.already_closed));
+    expect(new Set(out.failed)).toEqual(new Set(e.failed));
+    expect(Object.fromEntries(out.failures.map((f) => [f.order_id, f.code]))).toEqual(e.failure_codes);
+    expect(out.last_error_code).toBe(e.last_error_code);
     for (const call of calls) {
       expect(call.method).toBe("POST");
       expect(call.body).toEqual({});
+      expect(call.headers.has("Idempotency-Key")).toBe(false);
     }
   });
 });
@@ -108,19 +136,40 @@ describe("cancelAll", () => {
     expect(sleeps).toEqual([]);
   });
 
-  it("a 429 inside the loop waits its Retry-After, and that wait counts against the time budget", async () => {
+  it("a 429 inside the loop waits its Retry-After exactly, and that wait counts against the time budget", async () => {
     const { client, calls, sleeps, elapsed } = clockedClient([
       json(429, { error: { code: "RATE_LIMITED", message: "slow", retryable: true, details: { retry_after_seconds: 119 } } },
         { "Retry-After": "119" }),
       round(pending(["p1"])),
     ]);
     const out = await client.trading.cancelAll({ symbol: null, untilDone: true });
+    // The 429 is a round of its own (the transport does not retry inside the loop).
     expect(calls.length).toBe(2);
-    expect(sleeps).toHaveLength(1);
-    expect(sleeps[0]).toBeGreaterThanOrEqual(119_000); // Retry-After, plus the transport's jitter
-    // About 119 s spent; the 1 s backoff would reach the 120 s budget, so the loop stops.
-    expect(out).toMatchObject({ rounds: 1, stopped: "time_budget", failed: ["p1"] });
-    expect(elapsed()).toBe(sleeps[0]);
+    expect(sleeps).toEqual([119_000]);
+    // 119 s spent; the 1 s backoff would reach the 120 s budget, so the loop stops.
+    expect(out).toMatchObject({ rounds: 2, stopped: "time_budget", failed: ["p1"] });
+    expect(out.last_error_code).toBeUndefined();
+    expect(elapsed()).toBe(119_000);
+  });
+
+  it("20 rounds that all fail with a retryable 503 send exactly 20 requests", async () => {
+    const { client, calls } = clockedClient([], () =>
+      json(503, { error: { code: "SERVICE_UNAVAILABLE", message: "busy", retryable: true } }),
+    );
+    const out = await client.trading.cancelAll({ symbol: null, untilDone: true, timeBudgetMs: 1e9 });
+    expect(calls.length).toBe(20);
+    expect(out).toMatchObject({ rounds: 20, stopped: "max_rounds", last_error_code: "SERVICE_UNAVAILABLE" });
+  });
+
+  it("a non-retryable error throws CancelAllInterruptedError with the error and the partial result", async () => {
+    const { client } = clockedClient([
+      round({ cancelled: ["o1"], already_closed: [], failed: [], has_more: true }),
+      json(403, { error: { code: "FORBIDDEN", message: "missing trade scope", retryable: false } }),
+    ]);
+    const err = await client.trading.cancelAll({ symbol: null, untilDone: true }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CancelAllInterruptedError);
+    expect((err as CancelAllInterruptedError).error).toBeInstanceOf(ForbiddenError);
+    expect((err as CancelAllInterruptedError).partial).toMatchObject({ cancelled: ["o1"], rounds: 2 });
   });
 
   it("an order that ends cancelled or already closed is never also reported failed", async () => {

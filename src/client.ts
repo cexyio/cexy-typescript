@@ -138,6 +138,7 @@ export class CexyClient {
             requestsPerMinute:
               options.rateLimit?.requestsPerMinute ?? (authenticator ? DEFAULT_RPM_WITH_KEY : DEFAULT_RPM_ANONYMOUS),
             sleep,
+            ...(options.now ? { now: options.now } : {}),
           });
 
     this.#baseUrl = baseUrl;

@@ -62,13 +62,24 @@ describe("GET retries", () => {
 });
 
 describe("mutations", () => {
-  it("send an auto Idempotency-Key and reuse it on retry after a network error", async () => {
-    const { client, calls } = testClient({ replies: [networkError()], fallback: ok(order({ status: "cancelled" })) });
-    await client.trading.cancelOrder("ord_1");
+  it("pool join sends an auto Idempotency-Key and reuses it on retry after a network error", async () => {
+    const { client, calls } = testClient({ replies: [networkError()], fallback: ok({}) });
+    await client.pools.join("BTC/USDT", { base_amount: "1", quote_amount: "2" });
     expect(calls.length).toBe(2);
-    expect(calls[0]!.method).toBe("DELETE");
     expect(calls[0]!.headers.get("Idempotency-Key")).toBeTruthy();
     expect(calls[0]!.headers.get("Idempotency-Key")).toBe(calls[1]!.headers.get("Idempotency-Key"));
+  });
+
+  it("orders, cancels and cancel-all send no Idempotency-Key (the server does not honour it there)", async () => {
+    const { client, calls } = testClient({
+      replies: [networkError(), ok(order({ status: "cancelled" })), ok({ order: order(), fills: [] })],
+      fallback: ok({ cancelled: [], already_closed: [], failed: [], failures: [], has_more: false }),
+    });
+    await client.trading.cancelOrder("ord_1", { idempotencyKey: "ignored" });
+    await client.trading.placeOrder(req);
+    await client.trading.cancelAll({ symbol: "BTC/USDT" });
+    expect(calls.map((c) => c.method)).toEqual(["DELETE", "DELETE", "POST", "POST"]);
+    for (const c of calls) expect(c.headers.has("Idempotency-Key")).toBe(false);
   });
 
   it("use the caller's Idempotency-Key when given", async () => {
@@ -139,7 +150,7 @@ describe("placeOrder retry safety", () => {
     expect(r1.client_order_id).toBe(calls[0]!.body.client_order_id);
     await client.trading.placeOrder({ ...req, client_order_id: "mine-1" });
     expect(calls[1]!.body.client_order_id).toBe("mine-1");
-    expect(calls[0]!.headers.get("Idempotency-Key")).not.toBe(calls[1]!.headers.get("Idempotency-Key"));
+    expect(calls[0]!.headers.has("Idempotency-Key")).toBe(false);
   });
 
   it("after an ambiguous failure, finds the order by client id and does NOT resend", async () => {
@@ -164,7 +175,7 @@ describe("placeOrder retry safety", () => {
     expect(res.recovered).toBe(false);
     expect(calls.map((c) => c.method)).toEqual(["POST", "GET", "POST"]);
     expect(calls[0]!.body.client_order_id).toBe(calls[2]!.body.client_order_id);
-    expect(calls[0]!.headers.get("Idempotency-Key")).toBe(calls[2]!.headers.get("Idempotency-Key"));
+    expect(calls[2]!.headers.has("Idempotency-Key")).toBe(false);
   });
 
   it("throws OrderStateUnknownError when the lookup fails too", async () => {
