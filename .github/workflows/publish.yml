@@ -10,6 +10,13 @@ on:
     tags: ["v*.*.*"]
 permissions:
   contents: read
+env:
+  # One definition of the publish command, used verbatim by the build job's dry run and by the
+  # publish job, both from $GITHUB_WORKSPACE with the tarball in ./pkg. PUBLISH_ARGS is expanded
+  # unquoted on purpose (word splitting and the glob). "./" matters: npm reads "pkg/x.tgz" as
+  # a GitHub user/repo shorthand, not a file.
+  NPM_CLI: npm@11.6.2
+  PUBLISH_ARGS: ./pkg/*.tgz --access public --ignore-scripts
 
 jobs:
   build:
@@ -57,10 +64,14 @@ jobs:
           # Printed so a manually published tarball can be checked against what CI built
           # (the artifact digest covers the zip, not the tgz).
           (cd "$RUNNER_TEMP/pkg" && sha256sum *.tgz | sed 's/^/tarball sha256 /')
-      - name: Dry-run the exact publish command (no upload; catches argument mistakes before approval)
+      - name: Dry-run the publish command (same command, same directory as the publish job; no upload)
+        working-directory: ${{ github.workspace }}
         env:
           DIST_TAG: ${{ steps.meta.outputs.dist_tag }}
-        run: npx -y npm@11.6.2 publish "$RUNNER_TEMP"/pkg/*.tgz --dry-run --provenance=false --access public --tag "$DIST_TAG" --ignore-scripts
+        run: |
+          mkdir -p pkg && cp "$RUNNER_TEMP"/pkg/*.tgz pkg/
+          # shellcheck disable=SC2086
+          npx -y "$NPM_CLI" publish $PUBLISH_ARGS --tag "$DIST_TAG" --provenance=false --dry-run
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: npm-package
@@ -84,5 +95,6 @@ jobs:
       - name: Publish the tarball built above
         env:
           DIST_TAG: ${{ needs.build.outputs.dist_tag }}
-        # "./" matters: npm reads "pkg/x.tgz" as a GitHub user/repo shorthand, not a file.
-        run: npx -y npm@11.6.2 publish ./pkg/*.tgz --provenance --access public --tag "$DIST_TAG" --ignore-scripts
+        run: |
+          # shellcheck disable=SC2086
+          npx -y "$NPM_CLI" publish $PUBLISH_ARGS --tag "$DIST_TAG" --provenance
