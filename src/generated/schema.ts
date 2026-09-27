@@ -531,7 +531,11 @@ export interface paths {
         put?: never;
         /**
          * Cancels every open order, optionally within one market.
-         * @description Best-effort: a failure on one order does not stop the rest, and both outcomes are reported. A panic-button endpoint that stops at the first problem is worse than useless.
+         * @description Best-effort: a failure on one order does not stop the rest, and every outcome is reported. A panic-button endpoint that stops at the first problem is worse than useless.
+         *
+         *     An order still being placed when the call starts (status `pending`, for as long as its own placement request runs) is waited for, up to 500 ms per call in total: cancelled if it opens, reported in `already_closed` if it fills or is refused, and in `failed` with code `INVALID_STATE` if it is still being placed at the deadline. Orders placed after the call starts are not part of it. At most 500 orders per call; `has_more` says there are others.
+         *
+         *     Limited to 30 calls a minute per account, on top of the general request limit.
          */
         post: operations["cancel_all"];
         delete?: never;
@@ -839,12 +843,31 @@ export interface components {
             /** @description Limit the cancellation to one market. Omitted or `null`, every market's open orders are cancelled. */
             symbol?: string | null;
         };
-        /** @description What a bulk cancellation achieved. */
+        /**
+         * @description What a bulk cancellation achieved.
+         *
+         *     Every order the call handled is in exactly one of `cancelled`, `already_closed` and `failed`.
+         */
         CancelAllResponse: {
+            /** @description Orders that closed on their own (filled, rejected, cancelled elsewhere) before this call reached them. Nothing was done to them, and they are not failures. */
+            already_closed: string[];
             /** @description Orders cancelled. */
             cancelled: string[];
-            /** @description Orders that could not be cancelled. Each failure is logged server-side. */
+            /** @description Orders that could not be cancelled in this call. Check `failures` for why, then refresh or call again. */
             failed: string[];
+            /** @description Why each order in `failed` could not be cancelled. */
+            failures: components["schemas"]["CancelFailureResponse"][];
+            /** @description More open orders exist than one call handles (500). Call again. */
+            has_more: boolean;
+        };
+        /** @description Why one order could not be cancelled. */
+        CancelFailureResponse: {
+            /** @description The error code of the attempt, as in any error response: e.g. `INVALID_STATE` for an order still being placed when the wait ran out, or `MARKET_UNAVAILABLE`. */
+            code: string;
+            /** @description Its message. */
+            message: string;
+            /** @description The order. */
+            order_id: string;
         };
         /**
          * @description Candle/kline intervals for market data.
@@ -2678,6 +2701,24 @@ export interface operations {
                     "application/json": {
                         data: components["schemas"]["CancelAllResponse"];
                     };
+                };
+            };
+            /** @description No such market */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Over 30 calls a minute for this account; `details.retry_after_seconds` says when to retry */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

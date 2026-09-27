@@ -70,6 +70,8 @@ export interface CexyClientOptions {
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** @internal Deterministic jitter in tests. */
   random?: () => number;
+  /** @internal Replace the clock in tests (milliseconds). */
+  now?: () => number;
 }
 
 /**
@@ -149,6 +151,7 @@ export class CexyClient {
       userAgent: canSetUserAgent() ? [USER_AGENT, options.userAgentSuffix].filter(Boolean).join(" ") : null,
       sleep,
       random: options.random ?? Math.random,
+      now: options.now ?? Date.now,
       onRetry: options.onRetry,
     });
 
