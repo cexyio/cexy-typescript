@@ -6,8 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-dev.3]
+
+### Security
+- **Redirects are no longer followed.** Earlier versions called `fetch` with the default
+  `redirect: "follow"`. Fetch strips only `Authorization` on a cross-origin redirect, so a 3xx from the
+  API host (or anything between you and it) re-sent `X-API-Key` and `X-API-Secret` to the redirect
+  target, over plain `http://` as well. A 307/308 on `placeOrder` also re-posted the order. Requests
+  now use `redirect: "manual"`, and a 3xx (or a response a custom `fetch` followed anyway) throws
+  `CexyApiError` with code `UNEXPECTED_REDIRECT`, which is not retried. Upgrade from 0.1.0-dev.2 or
+  earlier.
+
 ### Changed
-- **Requires Node.js 22 or newer** (`engines` `>=22`). Node 20 reached end-of-life in April 2026.
+- **Breaking: requires Node.js 22 or newer** (`engines` `>=22`). Node 20 reached end-of-life in April 2026.
   CI tests Node 22, 24 and 26.
 - Build target `node22` (was `node20`).
 

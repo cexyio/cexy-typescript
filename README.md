@@ -229,6 +229,9 @@ endpoints from a server. Browsers do not let scripts set `User-Agent`, so the SD
 - Credentials go only in the `X-API-Key` / `X-API-Secret` headers and only on private endpoints; never in URLs.
 - Only `https://` base URLs and `wss://` WebSocket URLs are accepted. `allowInsecure: true` permits
   `http://` / `ws://` solely for `localhost`, `127.0.0.1` or `::1` (local test servers).
+- The SDK **never follows HTTP redirects**. A 3xx answer throws a `CexyApiError` with code
+  `UNEXPECTED_REDIRECT` (not retried), so credentials are never re-sent to another host and an order
+  is never re-posted to a redirect target. If you pass your own `fetch`, it must honour `redirect: "manual"`.
 - The SDK redacts the secret from `toString()`, `util.inspect`, `JSON.stringify` and error messages.
 - Keep keys in environment variables or a secret manager, not in code.
 

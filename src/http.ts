@@ -171,7 +171,16 @@ export class Transport {
     let res: Response;
     let text: string;
     try {
-      res = await this.config.fetch(url.toString(), { method: info.method, headers, body, signal: ctrl.signal });
+      // Never follow redirects: fetch would re-send X-API-Key/X-API-Secret to the redirect target
+      // (only Authorization is stripped cross-origin, and Node follows https -> http), and a
+      // 307/308 would re-POST an order. A 3xx is surfaced as an error below instead.
+      res = await this.config.fetch(url.toString(), {
+        method: info.method,
+        headers,
+        body,
+        signal: ctrl.signal,
+        redirect: "manual",
+      });
       text = await res.text();
     } catch (err) {
       if (opts.signal?.aborted) throw opts.signal.reason ?? err;
@@ -182,6 +191,17 @@ export class Transport {
     } finally {
       clearTimeout(timer);
       opts.signal?.removeEventListener("abort", onAbort);
+    }
+
+    // "opaqueredirect" is what browsers return for redirect: "manual"; Node returns the 3xx itself.
+    // `redirected` catches a caller-supplied fetch that followed the redirect anyway.
+    if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400) || res.redirected) {
+      throw new CexyApiError({
+        status: res.status,
+        code: "UNEXPECTED_REDIRECT",
+        message: `${info.method} ${info.path}: the server answered with a redirect (HTTP ${res.status}); the SDK does not follow redirects. Check baseUrl.`,
+        retryable: false,
+      });
     }
 
     this.config.limiter?.update(res.headers);
