@@ -54,6 +54,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/pkg"
           npm pack --pack-destination "$RUNNER_TEMP/pkg"
           ls -l "$RUNNER_TEMP/pkg"
+          # Printed so a manually published tarball can be checked against what CI built
+          # (the artifact digest covers the zip, not the tgz).
+          (cd "$RUNNER_TEMP/pkg" && sha256sum *.tgz | sed 's/^/tarball sha256 /')
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: npm-package
