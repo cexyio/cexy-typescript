@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **Requires Node.js 22 or newer** (`engines` `>=22`). Node 20 reached end-of-life in April 2026.
+  CI tests Node 22, 24 and 26.
+- Build target `node22` (was `node20`).
+
 ## [0.1.0-dev.2]
 
 First release published by CI through npm trusted publishing, with provenance. Same code as
