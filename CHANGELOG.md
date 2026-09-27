@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+- `JurisdictionBlockedError` (a `ForbiddenError` subclass) for `JURISDICTION_BLOCKED` / HTTP 451.
+- README: pre-releases install with `npm install @cexyio/cexy@next`.
 - Requires Node.js 20 or newer (Node 18 is end-of-life and lacks the global `crypto.randomUUID`).
 
 ### Changed

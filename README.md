@@ -9,11 +9,12 @@ The official TypeScript/JavaScript SDK for the [CEXY.io](https://cexy.io) REST a
 
 > **Status: 0.x.** The API is not yet frozen. It stays 0.x until the exchange ships HMAC request signing,
 > which will change how credentials are sent.
+> Pre-release: `npm install @cexyio/cexy@next`; `latest` currently points at a pre-release until 1.0.
 
 ## Install
 
 ```bash
-npm install @cexyio/cexy
+npm install @cexyio/cexy@next
 # Node only, optional: lets the WebSocket client send a User-Agent (recommended before Node 22)
 npm install ws
 ```
@@ -102,6 +103,7 @@ Every API failure throws a `CexyApiError` (or a subclass) with `status`, `code`,
 |---|---|
 | `AuthenticationError` | 401: missing or invalid credentials |
 | `ForbiddenError` | 403: the key lacks a scope (`FORBIDDEN`), or the route is session-only (`API_KEY_NOT_ALLOWED`) |
+| `JurisdictionBlockedError` | 451: `JURISDICTION_BLOCKED` (not available in the caller's jurisdiction); a `ForbiddenError` subclass |
 | `ValidationError` | 400: see `fields` |
 | `NotFoundError` | 404 |
 | `ConflictError` | 409: `ALREADY_EXISTS`, `IDEMPOTENCY_KEY_CONFLICT`, `CONCURRENT_MODIFICATION` |

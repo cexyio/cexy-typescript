@@ -9,6 +9,7 @@ export {
   CexyTimeoutError,
   ConflictError,
   ForbiddenError,
+  JurisdictionBlockedError,
   InvalidAmountError,
   NotFoundError,
   OrderStateUnknownError,
