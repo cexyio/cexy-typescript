@@ -414,7 +414,7 @@ export interface paths {
         put?: never;
         /**
          * Removes liquidity.
-         * @description Shares are burned and a proportional slice of both assets is returned.
+         * @description The pool's resting orders for the market are cancelled first, because reserves locked in an order cannot be paid out. Shares are burned and a proportional slice of both assets is returned.
          */
         post: operations["exit_pool"];
         delete?: never;
@@ -474,9 +474,9 @@ export interface paths {
         put?: never;
         /**
          * Places an order.
-         * @description Funds are reserved before the order reaches the book, so a matched order can never be unfunded. On a buy the reservation covers the value plus the **taker** fee, which is the worst case; a maker fill releases the difference.
+         * @description Funds are reserved before the order reaches the book, so a matched order can never be unfunded. On a buy the reservation covers the value plus the **taker** fee, which is the worst case — a maker fill releases the difference.
          *
-         *     Set `client_order_id` to make a retry safe (a repeated id is refused before funds move). `Idempotency-Key` has no effect on this endpoint.
+         *     Set `client_order_id` to make a retry safe: it is unique per account, so a repeat is refused before any funds move, and `GET /trading/orders/by-client-id/{client_order_id}` recovers the outcome. `Idempotency-Key` is not honoured here.
          */
         post: operations["place_order"];
         delete?: never;
@@ -583,7 +583,7 @@ export interface paths {
         };
         /**
          * The caller's deposit address for an asset on a network.
-         * @description Idempotent: the same address is returned on every call.
+         * @description The first call for an asset and network creates the address; every later call, and any call racing the first, returns that same address. On chains where an address works across sibling networks, the account's address from a sibling is reused.
          */
         get: operations["deposit_address"];
         put?: never;
@@ -721,7 +721,7 @@ export interface components {
         /**
          * @description Scope attached to an API key.
          *
-         *     Here scopes apply to API keys only, and a session token carries no key scopes at all.
+         *      Scopes narrow what an API key may do. They apply to API keys only: a signed-in session carries none and is not limited by them.
          * @enum {string}
          */
         ApiScope: "read" | "trade";
@@ -836,7 +836,7 @@ export interface components {
         };
         /** @description Cancels every open order, optionally within one market. */
         CancelAllRequest: {
-            /** @description Limit the cancellation to one market. */
+            /** @description Limit the cancellation to one market. Omitted or `null`, every market's open orders are cancelled. */
             symbol?: string | null;
         };
         /** @description What a bulk cancellation achieved. */
@@ -942,30 +942,41 @@ export interface components {
         };
         /**
          * @description Lifecycle of an incoming blockchain deposit.
-         *
-         *     One enum makes those unrepresentable.
          * @enum {string}
          */
         DepositStatus: "detected" | "credited" | "reversed" | "orphaned" | "below_minimum" | "under_review" | "internal";
+        /** @description A structured value attached to an error. Kept deliberately narrow so that no accidental secret (a token, a key, a full document) can be attached. */
+        DetailValue: string | number | boolean;
+        /** @description The `error` object as it appears on the wire. */
         ErrorBody: {
             code: components["schemas"]["ErrorCode"];
+            /** @description Structured context, when available. */
             details?: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["DetailValue"];
             };
+            /**
+             * @description Per-field validation messages, keyed by request field name.
+             *
+             *     Present only on validation failures. Render each message beside its input.
+             */
             fields?: {
                 [key: string]: string;
             };
-            /** @description Human-readable; may change. Branch on `code`. */
+            /** @description Human-readable description. May change between releases. */
             message: string;
+            /** @description Correlates this response with server logs. Quote it in support requests. */
             request_id?: string | null;
+            /** @description Whether an identical retry could succeed. */
             retryable: boolean;
         };
         /**
-         * @description PROVISIONAL (errors.yaml) until the served spec includes it.
+         * @description Stable, machine-readable error identifiers.
+         *
+         *     Serialized as `SCREAMING_SNAKE_CASE`. Adding a variant is backwards-compatible; renaming or removing one is a breaking API change.
          * @enum {string}
          */
-        ErrorCode: "VALIDATION_FAILED" | "MALFORMED_REQUEST" | "INVALID_CURSOR" | "PRECISION_EXCEEDED" | "BELOW_MINIMUM" | "ABOVE_MAXIMUM" | "INVALID_ADDRESS" | "MEMO_REQUIRED" | "UNAUTHENTICATED" | "INVALID_CREDENTIALS" | "TOKEN_EXPIRED" | "SESSION_REVOKED" | "TWO_FACTOR_REQUIRED" | "TWO_FACTOR_INVALID" | "FRESH_TWO_FACTOR_REQUIRED" | "FORBIDDEN" | "API_KEY_NOT_ALLOWED" | "FUTURES_RESTRICTED" | "ACCOUNT_FROZEN" | "ACCOUNT_ON_HOLD" | "EMAIL_NOT_VERIFIED" | "REGION_BLOCKED" | "NOT_FOUND" | "METHOD_NOT_ALLOWED" | "ALREADY_EXISTS" | "INVALID_STATE" | "IDEMPOTENCY_KEY_CONFLICT" | "WINDOW_OPEN" | "EVIDENCE_CONTRADICTS" | "AMOUNT_MISMATCH" | "CONCURRENT_MODIFICATION" | "INSUFFICIENT_FUNDS" | "INSUFFICIENT_FEE_FUNDS" | "MARKET_UNAVAILABLE" | "DEPOSIT_DISABLED" | "WITHDRAWAL_DISABLED" | "SELF_TRADE_BLOCKED" | "LIMIT_EXCEEDED" | "RATE_LIMITED" | "INTERNAL" | "SERVICE_UNAVAILABLE" | "UNDER_MAINTENANCE" | "ENGINE_OVERLOADED";
-        /** @description The error envelope returned by every failing request. */
+        ErrorCode: "VALIDATION_FAILED" | "MALFORMED_REQUEST" | "INVALID_CURSOR" | "PRECISION_EXCEEDED" | "BELOW_MINIMUM" | "ABOVE_MAXIMUM" | "INVALID_ADDRESS" | "MEMO_REQUIRED" | "UNAUTHENTICATED" | "INVALID_CREDENTIALS" | "TOKEN_EXPIRED" | "SESSION_REVOKED" | "TWO_FACTOR_REQUIRED" | "TWO_FACTOR_INVALID" | "FRESH_TWO_FACTOR_REQUIRED" | "FORBIDDEN" | "API_KEY_NOT_ALLOWED" | "FUTURES_RESTRICTED" | "ACCOUNT_FROZEN" | "ACCOUNT_ON_HOLD" | "EMAIL_NOT_VERIFIED" | "REGION_BLOCKED" | "JURISDICTION_BLOCKED" | "NOT_FOUND" | "METHOD_NOT_ALLOWED" | "ALREADY_EXISTS" | "INVALID_STATE" | "IDEMPOTENCY_KEY_CONFLICT" | "WINDOW_OPEN" | "EVIDENCE_CONTRADICTS" | "AMOUNT_MISMATCH" | "CONCURRENT_MODIFICATION" | "INSUFFICIENT_FUNDS" | "INSUFFICIENT_FEE_FUNDS" | "MARKET_UNAVAILABLE" | "DEPOSIT_DISABLED" | "WITHDRAWAL_DISABLED" | "SELF_TRADE_BLOCKED" | "LIMIT_EXCEEDED" | "RATE_LIMITED" | "INTERNAL" | "SERVICE_UNAVAILABLE" | "UNDER_MAINTENANCE" | "ENGINE_OVERLOADED";
+        /** @description The top-level error envelope. */
         ErrorResponse: {
             error: components["schemas"]["ErrorBody"];
         };
@@ -1094,8 +1105,6 @@ export interface components {
         };
         /**
          * @description What a ledger entry records.
-         *
-         *     Adding a money-moving feature means adding a variant here and emitting entries — never editing a balance formula.
          * @enum {string}
          */
         LedgerEntryKind: "deposit" | "deposit_reversal" | "withdrawal_debit" | "withdrawal_fee" | "withdrawal_fee_reserve" | "withdrawal_release" | "withdrawal_fee_release" | "order_reserve" | "withdrawal_reserve" | "order_release" | "trade_debit" | "trade_credit" | "trade_fee" | "transfer_out" | "transfer_in" | "adjustment_credit" | "adjustment_debit" | "rebate" | "pool_join" | "pool_exit" | "futures_transfer_reserve" | "futures_transfer_release" | "futures_collateral_sent" | "futures_collateral_returned" | "trade_fee_revenue" | "withdrawal_fee_revenue" | "futures_transfer_fee_revenue" | "futures_hyperliquid_cost" | "futures_transfer_discrepancy" | "exchange_capital";
@@ -1271,7 +1280,7 @@ export interface components {
              * Format: int64
              * @description The realtime sequence this snapshot is current as of.
              *
-             *     To synchronise with the `orderbook:{symbol}` WebSocket channel: subscribe first, fetch this snapshot, and ignore updates whose `sequence` is at or below this value. Every update carries the complete top 50 levels of both sides and replaces the previous state (there are no deltas). A gap in `sequence` only means the book was briefly stale; the next update is complete.
+             *     Each `orderbook.update` on the `orderbook:{symbol}` websocket channel carries both sides of the top 50 levels in full (`data.full` is always `true`) and replaces the previous state; there are no deltas to buffer. Ignore an update whose `sequence` is at or below the one you hold. A gap only means a book was missed: the next update replaces it whole.
              */
             sequence: number;
             /** @description Market symbol. */
@@ -1342,8 +1351,6 @@ export interface components {
         OrderStatus: "pending" | "open" | "partially_filled" | "filled" | "cancelled" | "rejected" | "pending_trigger" | "expired";
         /**
          * @description Order types the matching engine accepts.
-         *
-         *     That separation is kept: this enum covers what the book itself understands.
          * @enum {string}
          */
         OrderType: "limit" | "market" | "stop_limit" | "stop_market";
@@ -1361,7 +1368,7 @@ export interface components {
         /**
          * @description Places an order.
          *
-         *     Set `client_order_id` to make a retry safe: it is unique per account, a repeated id is refused before any funds move, and the order can be recovered with GET /api/v1/trading/orders/by-client-id/{client_order_id}. `Idempotency-Key` has no effect on this endpoint.
+         *     Set `client_order_id` to make a retry safe: it is unique per account, so a repeat is refused before any funds move, and `GET /trading/orders/by-client-id/{client_order_id}` recovers the outcome. `Idempotency-Key` is not honoured for orders.
          */
         PlaceOrderRequest: {
             /** @description Your own identifier. Unique per account. */
@@ -1580,6 +1587,12 @@ export interface components {
         };
         /**
          * @description Lifecycle of an outgoing withdrawal.
+         *
+         *
+         *
+         *     `pending_approval` waits for an operator to approve the withdrawal. `broadcast_unknown`
+         *     means the transaction may have been sent: the funds stay debited until it is resolved
+         *     against the chain.
          * @enum {string}
          */
         WithdrawalStatus: "requested" | "pending_approval" | "approved" | "processing" | "broadcast" | "completed" | "rejected" | "cancelled" | "failed" | "broadcast_unknown";
@@ -1667,7 +1680,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
         };
     };
@@ -1818,7 +1833,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
         };
     };
@@ -1858,12 +1875,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description CSV of deposits */
+            /** @description CSV of deposits. Columns: deposit_id, time, asset, network, amount, status, txid, output_index, confirmations */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "text/csv": string;
+                };
             };
         };
     };
@@ -1881,12 +1900,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description CSV of ledger entries */
+            /** @description CSV of ledger entries. Columns: entry_id, time, asset, kind, available_delta, locked_delta, pending_delta, available_after, sequence, reference */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "text/csv": string;
+                };
             };
         };
     };
@@ -1904,19 +1925,23 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description CSV of orders */
+            /** @description CSV of orders. Columns: order_id, client_order_id, time, market, side, type, status, price, quantity, filled_quantity, filled_quote_quantity, fee_paid */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "text/csv": string;
+                };
             };
             /** @description The date range is invalid or too wide */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
         };
     };
@@ -1934,19 +1959,23 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description CSV of executed trades */
+            /** @description CSV of executed trades. Columns: trade_id, time, market, side, role, price, quantity, quote_quantity, fee, fee_asset */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "text/csv": string;
+                };
             };
             /** @description The date range is invalid or too wide */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
         };
     };
@@ -1964,12 +1993,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description CSV of withdrawals */
+            /** @description CSV of withdrawals. Columns: withdrawal_id, time, asset, network, amount, fee, fee_asset, status, address, txid */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "text/csv": string;
+                };
             };
         };
     };
@@ -2048,7 +2079,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
         };
     };
@@ -2092,7 +2125,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
         };
     };
@@ -2130,7 +2165,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
         };
     };
@@ -2177,7 +2214,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
         };
     };
@@ -2256,7 +2295,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
         };
     };
@@ -2298,21 +2339,27 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
             /** @description No pool, or no position in it */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
             /** @description The idempotency key was reused with a different body */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
         };
     };
@@ -2354,28 +2401,36 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
             /** @description No pool for that market */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
             /** @description The idempotency key was reused with a different body */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
             /** @description Insufficient funds */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
         };
     };
@@ -2457,28 +2512,36 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
             /** @description That client order id is already in use */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
             /** @description Insufficient funds, or the market is unavailable */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
             /** @description The market is saturated; retry shortly */
             503: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
         };
     };
@@ -2510,7 +2573,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
         };
     };
@@ -2542,14 +2607,18 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
             /** @description The order is no longer open */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
         };
     };
@@ -2581,7 +2650,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
         };
     };
@@ -2721,14 +2792,18 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
             /** @description Deposits are disabled for this pairing */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
         };
     };
@@ -2796,7 +2871,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
         };
     };
@@ -2886,7 +2963,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
         };
     };
