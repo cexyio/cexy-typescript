@@ -5,7 +5,7 @@ The official TypeScript/JavaScript SDK for the [CEXY.io](https://cexy.io) REST a
 - Typed models generated from the public OpenAPI spec ([cexy-api-spec](https://github.com/cexyio/cexy-api-spec)).
 - Safe by default: retries with backoff, order placement that never duplicates (via `client_order_id`), a client-side rate limiter.
 - A WebSocket client with heartbeat, reconnect and a live order book that applies the sync rules for you.
-- ESM and CommonJS, Node 18+, zero runtime dependencies.
+- ESM and CommonJS, Node 20+, zero runtime dependencies.
 
 > **Status: 0.x.** The API is not yet frozen. It stays 0.x until the exchange ships HMAC request signing,
 > which will change how credentials are sent.

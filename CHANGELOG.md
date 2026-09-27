@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+- Requires Node.js 20 or newer (Node 18 is end-of-life and lacks the global `crypto.randomUUID`).
+
 ### Changed
 - Order safety is documented as resting on `client_order_id`; the server does not honour
   `Idempotency-Key` on order placement, order cancels or cancel-all (pool join/exit only).

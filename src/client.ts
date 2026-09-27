@@ -45,7 +45,7 @@ export interface CexyClientOptions {
   timeoutMs?: number;
   /** Retries after the first attempt for retryable failures. Default 3. */
   maxRetries?: number;
-  /** A `fetch` implementation. Default: the global `fetch` (Node 18+, browsers). */
+  /** A `fetch` implementation. Default: the global `fetch` (Node 20+, browsers). */
   fetch?: FetchLike;
   /**
    * Client-side rate limit in requests per minute, or `false` to disable. Default 100/min
@@ -116,7 +116,7 @@ export class CexyClient {
     this.#allowInsecure = options.allowInsecure === true;
 
     const fetchImpl = options.fetch ?? (globalThis.fetch);
-    if (!fetchImpl) throw new CexyConfigError("no global fetch found (Node 18+ required); pass options.fetch");
+    if (!fetchImpl) throw new CexyConfigError("no global fetch found (Node 20+ required); pass options.fetch");
 
     const timeoutMs = options.timeoutMs ?? 10_000;
     const maxRetries = options.maxRetries ?? 3;
