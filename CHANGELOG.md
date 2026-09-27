@@ -6,8 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-dev.1]
+
+First release published by CI through npm trusted publishing, with provenance.
+
+### Added
 - `JurisdictionBlockedError` (a `ForbiddenError` subclass) for `JURISDICTION_BLOCKED` / HTTP 451.
-- README: pre-releases install with `npm install @cexyio/cexy@next`.
+
+### Changed
+- README: pre-releases install with `npm install @cexyio/cexy@next`; `latest` points at a
+  pre-release until 1.0.
+
+## [0.1.0-dev.0] (2026-09-27)
+
+First published pre-release (manual bootstrap upload of the CI-built tarball; no provenance).
+
 - Requires Node.js 20 or newer (Node 18 is end-of-life and lacks the global `crypto.randomUUID`).
 
 ### Changed
@@ -26,12 +39,6 @@ All notable changes to this project are documented here. The format follows
 - `allowInsecure` option on `CexyClient` and `CexyWebSocket`; `isLocalHost()`.
 - `CexyWebSocket.ping()`, `authenticated` / `unsubscribed` events, `AuthResult`,
   `CexyWebSocketError.fromServer`.
-
-## [0.1.0-dev.0]
-
-First development prototype. Not published.
-
-### Added
 - `CexyClient` covering the 40 operations of the SDK surface: public market data, account, exports,
   wallet reads, trading and liquidity pools.
 - Types generated from `spec/openapi.sdk.json` (spec `info.version` 1.0.0), with amounts as decimal
