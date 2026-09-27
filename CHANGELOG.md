@@ -6,7 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-dev.4]
+
 ### Added
+- `cancelAll` returns the full cancel-all v2 response: `already_closed` (closed on its own; not an
+  error), `failures` (`order_id`, `code`, `message` for each order in `failed`) and `has_more`
+  (more than the 500 orders one call handles).
+- `cancelAll({ ..., untilDone: true })` repeats the call until nothing is left to retry, with backoff,
+  `maxRounds` (default 20) and `timeBudgetMs` (default 120000). It returns the merged result plus
+  `rounds` and `stopped`. Types `CancelAllUntilDoneResult`, `CancelAllStopReason`, `CancelFailure`.
+- Types generated from the updated spec: `cancel_all` declares 404 (unknown symbol) and 429 (30 calls
+  a minute per account).
 - `CLIENT_ERROR_CODES` (currently `UNEXPECTED_REDIRECT`): codes the SDK sets itself, which the API never
   sends.
 

@@ -15,6 +15,21 @@ export type AssetNetwork = S["AssetNetworkResponse"];
 export type Balance = S["BalanceResponse"];
 export type CancelAllRequest = S["CancelAllRequest"];
 export type CancelAllResult = S["CancelAllResponse"];
+/** Why one order could not be cancelled (`CancelAllResult.failures`). */
+export type CancelFailure = S["CancelFailureResponse"];
+/** Why a `cancelAll({ ..., untilDone: true })` loop ended. */
+export type CancelAllStopReason = "done" | "max_rounds" | "time_budget";
+/**
+ * Merged result of a `cancelAll({ ..., untilDone: true })` loop. Every order is in exactly one
+ * of `cancelled`, `already_closed` and `failed`, in its latest state; `has_more` is the last
+ * round's.
+ */
+export interface CancelAllUntilDoneResult extends CancelAllResult {
+  /** Number of cancel-all calls made. */
+  rounds: number;
+  /** `done`: nothing left to retry; otherwise the loop's limit that ended it. */
+  stopped: CancelAllStopReason;
+}
 export type Candle = S["CandleResponse"];
 export type CandleInterval = S["CandleInterval"];
 export type DepositAddress = S["DepositAddressResponse"];

@@ -60,7 +60,23 @@ await cexy.trading.cancelAll({ symbol: "BTC/USDT" }); // { symbol: null } = ever
 ```
 
 `cancelAll` requires `symbol`: the server treats a missing symbol as "every market", so the SDK makes
-you say so with `{ symbol: null }`. The server allows cancel-all 30 times per minute per account.
+you say so with `{ symbol: null }`. An unknown symbol throws `NotFoundError`.
+
+One call handles at most 500 orders and puts each in exactly one list: `cancelled`, `already_closed`
+(it filled, was refused or was cancelled elsewhere first; not an error) or `failed`, with the reason in
+`failures` (`INVALID_STATE` for an order still being placed). `has_more: true` means more orders remain.
+To let the SDK repeat the call for you:
+
+```ts
+const res = await cexy.trading.cancelAll({ symbol: null, untilDone: true });
+// res.stopped: "done" | "max_rounds" | "time_budget"; res.rounds: calls made
+if (res.stopped !== "done" || res.failed.length) console.warn("left over:", res.failures);
+```
+
+`untilDone` repeats while `has_more` is true or a failure is `INVALID_STATE` / `SERVICE_UNAVAILABLE`.
+After a call without progress it waits 1, 2, 4, 8, then 15 s, and it stops after `maxRounds` calls
+(default 20) or before a wait would pass `timeBudgetMs` (default 120 000). The server allows 30 cancel-all
+calls per minute per account; a 429 is retried after its Retry-After, which counts against the budget.
 
 Give both `apiKey` and `apiSecret`, or neither: passing only one throws at construction.
 

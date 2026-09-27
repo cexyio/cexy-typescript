@@ -9,6 +9,8 @@ import type {
   Asset,
   Balance,
   CancelAllResult,
+  CancelAllUntilDoneResult,
+  CancelFailure,
   Candle,
   CursorParams,
   Deposit,
@@ -251,7 +253,20 @@ export interface PlaceOrderResult extends PlaceOrderResponse {
  */
 export interface CancelAllParams {
   symbol: string | null;
+  /**
+   * Repeat the call until nothing is left to retry (see `cancelAll`). Default false: one call.
+   */
+  untilDone?: boolean;
+  /** With `untilDone`: at most this many calls. Default 20. */
+  maxRounds?: number;
+  /** With `untilDone`: stop before a wait would take the loop to this many ms. Default 120000. */
+  timeBudgetMs?: number;
 }
+
+/** Failure codes that clear up on their own: an order still being placed, a state read failure. */
+const CANCEL_RETRY_CODES = new Set(["INVALID_STATE", "SERVICE_UNAVAILABLE"]);
+/** Waits after rounds without progress, in seconds; the last value repeats. */
+const CANCEL_BACKOFF_S = [1, 2, 4, 8, 15];
 
 const ORDER_AMOUNT_FIELDS = ["price", "quantity", "quote_quantity", "stop_price"] as const;
 
@@ -371,19 +386,84 @@ export class TradingResource extends Resource {
    * Cancels every open order in one market: `cancelAll({ symbol: "BTC/USDT" })`.
    * To cancel across ALL markets, pass `symbol: null` explicitly: `cancelAll({ symbol: null })`.
    * Omitting `symbol` is an error, so an account-wide cancel never happens by accident
-   * (the server itself treats `{}` as every market).
+   * (the server itself treats `{}` as every market). An unknown symbol throws `NotFoundError`.
    *
-   * The server limits cancel-all to 30 calls per minute per account. It is naturally
-   * repeatable, so it is retried after network errors; a retry reports only what that retry
-   * cancelled.
+   * One call handles at most 500 orders. Every order it handled is in exactly one list:
+   * `cancelled`; `already_closed` (it filled, was refused or was cancelled elsewhere first:
+   * not an error); or `failed`, with the reason in `failures` (`INVALID_STATE` for an order
+   * still being placed when the server's 500 ms wait ran out). `has_more` says more orders
+   * remain: call again.
+   *
+   * With `untilDone: true` the SDK does that for you. It repeats while `has_more` is true or a
+   * failure is `INVALID_STATE` / `SERVICE_UNAVAILABLE`. After a call that made no progress it
+   * waits 1, 2, 4, 8 and then 15 s, starting over after any progress. It stops after
+   * `maxRounds` calls or before a wait would pass `timeBudgetMs`, and returns the merged
+   * result with `rounds` and `stopped`. Other failure codes are returned, never retried.
+   *
+   * The server allows 30 cancel-all calls per minute per account (a 429 is retried after its
+   * Retry-After). The call is naturally repeatable and needs no Idempotency-Key, so it is
+   * retried after network errors; a retry reports only what that retry did.
    */
-  async cancelAll(params: CancelAllParams, opts?: RequestOptions): Promise<CancelAllResult> {
+  cancelAll(params: CancelAllParams & { untilDone: true }, opts?: RequestOptions): Promise<CancelAllUntilDoneResult>;
+  cancelAll(params: CancelAllParams, opts?: RequestOptions): Promise<CancelAllResult>;
+  async cancelAll(params: CancelAllParams, opts?: RequestOptions): Promise<CancelAllResult | CancelAllUntilDoneResult> {
     const hasSymbol = !!params && typeof params === "object" && Object.prototype.hasOwnProperty.call(params, "symbol");
     const symbol: unknown = hasSymbol ? params.symbol : undefined;
     let body: { symbol?: string };
     if (typeof symbol === "string" && symbol !== "") body = { symbol };
     else if (hasSymbol && symbol === null) body = {};
     else throw new CexyConfigError('cancelAll(): pass { symbol: "BASE/QUOTE" }, or { symbol: null } to cancel in every market');
-    return this.data({ op: "cancel_all", body }, opts);
+    const once = () => this.data<CancelAllResult>({ op: "cancel_all", body }, opts);
+    if (params.untilDone !== true) return once();
+
+    const maxRounds = params.maxRounds ?? 20;
+    const budgetMs = params.timeBudgetMs ?? 120_000;
+    if (!(maxRounds >= 1)) throw new CexyConfigError("cancelAll(): maxRounds must be >= 1");
+    if (!(budgetMs > 0)) throw new CexyConfigError("cancelAll(): timeBudgetMs must be > 0");
+    const now = this.t.config.now ?? Date.now;
+    const start = now();
+    const state = new Map<string, { list: "cancelled" | "already_closed" | "failed"; failure?: CancelFailure }>();
+    let rounds = 0;
+    let idle = 0;
+    let last: CancelAllResult;
+    let stopped: CancelAllUntilDoneResult["stopped"];
+    for (;;) {
+      last = await once();
+      rounds++;
+      const failures = last.failures ?? [];
+      for (const id of last.cancelled ?? []) state.set(id, { list: "cancelled" });
+      for (const id of last.already_closed ?? []) state.set(id, { list: "already_closed" });
+      for (const id of last.failed ?? []) {
+        const failure = failures.find((f) => f.order_id === id);
+        state.set(id, failure ? { list: "failed", failure } : { list: "failed" });
+      }
+      const progress = (last.cancelled?.length ?? 0) + (last.already_closed?.length ?? 0) > 0;
+      if (!last.has_more && !failures.some((f) => CANCEL_RETRY_CODES.has(f.code))) {
+        stopped = "done";
+        break;
+      }
+      if (rounds >= maxRounds) {
+        stopped = "max_rounds";
+        break;
+      }
+      let waitMs = 0;
+      if (progress) idle = 0;
+      else waitMs = (CANCEL_BACKOFF_S[Math.min(idle++, CANCEL_BACKOFF_S.length - 1)] ?? 15) * 1000;
+      if (now() - start + waitMs >= budgetMs) {
+        stopped = "time_budget";
+        break;
+      }
+      if (waitMs > 0) await this.t.config.sleep(waitMs, opts?.signal);
+    }
+    const pick = (list: string) => [...state].filter(([, v]) => v.list === list).map(([id]) => id);
+    return {
+      cancelled: pick("cancelled"),
+      already_closed: pick("already_closed"),
+      failed: pick("failed"),
+      failures: [...state.values()].flatMap((v) => (v.list === "failed" && v.failure ? [v.failure] : [])),
+      has_more: last.has_more,
+      rounds,
+      stopped,
+    };
   }
 }

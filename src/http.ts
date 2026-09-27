@@ -54,6 +54,8 @@ export interface TransportConfig {
   userAgent: string | null;
   sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   random: () => number;
+  /** Milliseconds clock (default `Date.now`); injectable for tests. */
+  now?: () => number;
   onRetry?: ((info: RetryInfo) => void) | undefined;
 }
 
