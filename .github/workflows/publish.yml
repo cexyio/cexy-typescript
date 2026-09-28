@@ -55,6 +55,8 @@ jobs:
         run: |
           printf '%s\n' "$SCAN_PATTERNS" > "$RUNNER_TEMP/scan-patterns.txt"
           CEXY_SCAN_PATTERNS_FILE="$RUNNER_TEMP/scan-patterns.txt" python3 tools/scan_internal.py .
+      - name: Packed tarball installs into an empty project (ESM + CJS smoke, offline)
+        run: bash ci/consumer/run.sh
       - run: npm run build
       - name: Pack
         run: |

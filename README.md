@@ -79,6 +79,8 @@ After a call without progress it waits 1, 2, 4, 8, then 15 s, and it stops after
 request (the loop owns the retries, so it never sends more than `maxRounds` requests): a 429 round waits its
 Retry-After, which counts against the budget; another retryable error (5xx, network) takes the next backoff
 step; a wait that would pass the budget ends the loop with `stopped: "time_budget"` and `last_error_code`.
+A wait imposed by the client rate limiter (e.g. `X-RateLimit-Remaining: 0` with a Reset) counts too: if it
+would pass the budget the loop stops without calling, with `last_error_code: "RATE_LIMITED"`.
 A non-retryable error (e.g. a key without the trade scope) throws `CancelAllInterruptedError` with the error
 and the partial result. The server allows 30 cancel-all calls per minute per account.
 

@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- `cancelAll({ untilDone: true })` counts the client rate limiter's pending wait against its time budget.
+  A successful round with `X-RateLimit-Remaining: 0` and a long `X-RateLimit-Reset` made the limiter hold
+  the next round inside the request, invisibly to the loop, so it could run past the budget (e.g. 170 s
+  against 120 s). If the limiter's wait would reach the budget, the loop now stops before calling, with
+  `stopped: "time_budget"` and `last_error_code: "RATE_LIMITED"`. New `RateLimiter.pendingWaitMs()`.
+
+### CI
+- New `consumer` job, also run in the publish build job: the package is built and packed as users get it,
+  installed into an empty project without dev dependencies, and smoke-tested through ESM `import` and CJS
+  `require` (`ci/consumer/`, not part of the published package). A live `time()` call runs only with
+  `CEXY_LIVE_TESTS=1`.
+
 ## [0.1.0-dev.5]
 
 ### Fixed

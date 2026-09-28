@@ -67,3 +67,18 @@ jobs:
           npm run build
           node -e "const c=require('./dist/index.cjs'); if(!c.CexyClient) process.exit(1)"
           node --input-type=module -e "import {CexyClient} from './dist/index.js'; if(!CexyClient) process.exit(1)"
+
+  # CexyQA rule (2026-09-27): build the package exactly as users get it and use it from an empty
+  # project without dev dependencies, so a dev dependency can never mask a broken runtime path.
+  consumer:
+    runs-on: ubuntu-latest
+    defaults:
+      run: {working-directory: cexy-typescript}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {path: cexy-typescript, persist-credentials: false}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: {node-version: 22, cache: npm, cache-dependency-path: cexy-typescript/package-lock.json}
+      - run: npm ci
+      - name: Packed tarball installs into an empty project (ESM + CJS smoke, offline)
+        run: bash ci/consumer/run.sh
