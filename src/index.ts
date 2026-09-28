@@ -46,6 +46,7 @@ export {
   type PlaceOrderResult,
 } from "./resources.js";
 export * from "./types.js";
+export { isLedgerReference } from "./ledger.js";
 export {
   CexyWebSocket,
   CexyWebSocketError,

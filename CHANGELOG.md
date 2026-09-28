@@ -6,6 +6,26 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-dev.6] (2026-09-28)
+
+Synced with the API's H-1 release (spec in cexy-api-spec at fc3ce5c).
+
+### Added
+- `LedgerEntry.reference` is typed: `LedgerReference`, a union told apart by `type` (`deposit`,
+  `withdrawal`, `order`, `trade`, `transfer`, `adjustment`, `pool`, `futures_transfer`, `system`). Newer
+  types the SDK does not know yet arrive unchanged as `UnknownLedgerReference` instead of failing. Narrow
+  with the new `isLedgerReference(ref)` / `isLedgerReference(ref, "trade")`.
+- Id types `DepositId`, `FuturesTransferId`, `OrderId`, `PoolId`, `TradeId`, `UserId`, `WithdrawalId`:
+  plain strings, not format-checked.
+- Error code `PRICE_UNAVAILABLE` (422, `UnprocessableError`); withdrawal status `reverted` (a transaction
+  that failed on chain, refunded by the exchange); five new `LedgerEntryKind` values for held and
+  reversed transfers and withdrawal refunds.
+
+### Changed
+- `cancelAll` docs: the server now also cancels stop orders that have not triggered yet
+  (`pending_trigger`) and releases their reservations.
+- `JoinPoolRequest.max_ratio_deviation_percent` is typed as an amount (it was already validated as one).
+
 ### Fixed
 - `cancelAll({ untilDone: true })` counts the client rate limiter's pending wait against its time budget.
   A successful round with `X-RateLimit-Remaining: 0` and a long `X-RateLimit-Reset` made the limiter hold

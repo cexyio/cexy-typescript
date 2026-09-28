@@ -47,7 +47,32 @@ export type FeeSchedule = S["FeeScheduleResponse"];
 export type Fill = S["FillResponse"];
 export type JoinPoolRequest = S["JoinPoolRequest"];
 export type JoinPoolResult = S["JoinPoolResponse"];
-export type LedgerEntry = S["LedgerEntryResponse"];
+/** A ledger entry. `reference` also accepts cause types this SDK version does not know yet. */
+export type LedgerEntry = Omit<S["LedgerEntryResponse"], "reference"> & { reference: LedgerReference };
+/** What caused a ledger entry, as documented: one variant per `type`. */
+export type KnownLedgerReference = S["LedgerReference"];
+/** The documented `LedgerReference` types. */
+export type LedgerReferenceType = KnownLedgerReference["type"];
+/**
+ * A cause type this SDK version does not know yet (the server may add new ones). The object is
+ * kept as sent. Use `isLedgerReference()` to narrow to a documented variant.
+ */
+export interface UnknownLedgerReference {
+  type: string;
+  [field: string]: unknown;
+}
+/** `LedgerEntry.reference`: a documented variant or an unknown one; never throws on new types. */
+export type LedgerReference = KnownLedgerReference | UnknownLedgerReference;
+
+// Ids are opaque strings. The API documents today's format (24 hex characters), but the SDK does
+// not validate it, so a future format does not break clients.
+export type DepositId = S["DepositId"];
+export type FuturesTransferId = S["FuturesTransferId"];
+export type OrderId = S["OrderId"];
+export type PoolId = S["PoolId"];
+export type TradeId = S["TradeId"];
+export type UserId = S["UserId"];
+export type WithdrawalId = S["WithdrawalId"];
 export type LedgerEntryKind = S["LedgerEntryKind"];
 export type LiquidityRole = S["LiquidityRole"];
 export type MaintenanceState = S["MaintenanceState"];
