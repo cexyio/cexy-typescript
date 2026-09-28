@@ -4,7 +4,8 @@ import { defineConfig } from "eslint/config";
 import tseslint from "typescript-eslint";
 
 export default defineConfig(
-  { ignores: ["dist/**", "node_modules/**", "coverage/**", "src/generated/**"] },
+  // ci/consumer/ runs in an empty project against the installed tarball, outside this tsconfig.
+  { ignores: ["dist/**", "node_modules/**", "coverage/**", "src/generated/**", "ci/consumer/**"] },
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
   {

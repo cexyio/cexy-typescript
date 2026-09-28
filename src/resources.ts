@@ -520,8 +520,12 @@ export class TradingResource extends Resource {
         if (progress) idle = 0;
         else waitMs = (CANCEL_BACKOFF_S[Math.min(idle++, CANCEL_BACKOFF_S.length - 1)] ?? 15) * 1000;
       }
-      if (now() - start + waitMs >= budgetMs) {
+      // The client rate limiter may hold the next round (e.g. X-RateLimit-Remaining 0 with a
+      // Reset): that wait happens inside the request, so count it against the budget here.
+      const limiterMs = this.t.config.limiter?.pendingWaitMs() ?? 0;
+      if (now() - start + Math.max(waitMs, limiterMs) >= budgetMs) {
         stopped = "time_budget";
+        if (limiterMs > waitMs) lastErrorCode = "RATE_LIMITED";
         break;
       }
       if (waitMs > 0) await this.t.config.sleep(waitMs, opts?.signal);

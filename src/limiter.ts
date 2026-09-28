@@ -61,6 +61,18 @@ export class RateLimiter {
     }
   }
 
+  /**
+   * How long `acquire()` would wait right now, in ms (0 when a request may go at once). Lets a
+   * caller with a time budget, such as the cancelAll untilDone loop, count the limiter's wait.
+   */
+  pendingWaitMs(): number {
+    this.#refill();
+    const block = this.#blockedUntil - this.#now();
+    if (block > 0) return block;
+    if (this.#tokens >= 1) return 0;
+    return Math.min(MAX_BLOCK_MS, Math.ceil((1 - this.#tokens) * (60_000 / this.#rpm)));
+  }
+
   /** Adapts to the server's rate-limit headers. Never raises the configured limit. */
   update(headers: Headers): void {
     this.#refill();

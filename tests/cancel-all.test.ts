@@ -24,7 +24,7 @@ interface Case {
 const conformance = loadJson<{ cases: Case[] }>("conformance/trading/cancel_all_until_done.json");
 
 /** A client on a fake clock: calls take no time, and every sleep (loop or transport) advances it. */
-function clockedClient(replies: Reply[], fallback?: Reply) {
+function clockedClient(replies: Reply[], fallback?: Reply, rateLimit: { requestsPerMinute: number } | false = false) {
   const m = mockFetch(replies, fallback);
   let t = 1_000_000;
   const sleeps: number[] = [];
@@ -32,7 +32,7 @@ function clockedClient(replies: Reply[], fallback?: Reply) {
     apiKey: TEST_KEY,
     apiSecret: TEST_SECRET,
     fetch: m.fetch,
-    rateLimit: false,
+    rateLimit,
     random: () => 0.5,
     now: () => t,
     sleep: async (ms) => {
@@ -150,6 +150,40 @@ describe("cancelAll", () => {
     expect(out).toMatchObject({ rounds: 2, stopped: "time_budget", failed: ["p1"] });
     expect(out.last_error_code).toBeUndefined();
     expect(elapsed()).toBe(119_000);
+  });
+
+  it("a rate-limiter block counts against the time budget (Remaining 0, Reset 170 s)", async () => {
+    // CexyQA probe: a successful round whose headers empty the rate-limit window for 170 s. The
+    // limiter would hold the next round inside the request, invisibly to the loop; the loop must
+    // count that wait and stop instead of sleeping past its 120 s budget.
+    const { client, calls, sleeps, elapsed } = clockedClient(
+      [ok({ cancelled: ["o1"], already_closed: [], failed: [], failures: [], has_more: true },
+        { "X-RateLimit-Limit": "300", "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "170" })],
+      undefined,
+      { requestsPerMinute: 300 },
+    );
+    const out = await client.trading.cancelAll({ symbol: null, untilDone: true });
+    expect(calls.length).toBe(1);
+    expect(sleeps).toEqual([]);
+    expect(elapsed()).toBe(0);
+    expect(out).toMatchObject({ rounds: 1, stopped: "time_budget", last_error_code: "RATE_LIMITED", cancelled: ["o1"] });
+  });
+
+  it("a short rate-limiter block within the budget is waited, then the loop continues", async () => {
+    const { client, calls, sleeps } = clockedClient(
+      [
+        ok({ cancelled: ["o1"], already_closed: [], failed: [], failures: [], has_more: true },
+          { "X-RateLimit-Limit": "300", "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "5" }),
+        round({ cancelled: ["o2"], already_closed: [], failed: [], has_more: false }),
+      ],
+      undefined,
+      { requestsPerMinute: 300 },
+    );
+    const out = await client.trading.cancelAll({ symbol: null, untilDone: true });
+    expect(calls.length).toBe(2);
+    expect(sleeps).toEqual([5_000]);
+    expect(out).toMatchObject({ stopped: "done", cancelled: ["o1", "o2"] });
+    expect(out.last_error_code).toBeUndefined();
   });
 
   it("20 rounds that all fail with a retryable 503 send exactly 20 requests", async () => {
