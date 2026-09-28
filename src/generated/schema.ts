@@ -530,8 +530,10 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Cancels every open order, optionally within one market.
-         * @description Best-effort: a failure on one order does not stop the rest, and every outcome is reported. A panic-button endpoint that stops at the first problem is worse than useless.
+         * Cancels every open order, and every stop order that has not triggered, optionally within
+         * @description one market.
+         *
+         *     Best-effort: a failure on one order does not stop the rest, and every outcome is reported. A panic-button endpoint that stops at the first problem is worse than useless. A stop waiting for its trigger (`pending_trigger`) is cancelled too and its reservation released, so nothing fires into the market after the call.
          *
          *     An order still being placed when the call starts (status `pending`, for as long as its own placement request runs) is waited for, up to 500 ms per call in total: cancelled if it opens, reported in `already_closed` if it fills or is refused, and in `failed` with code `INVALID_STATE` if it is still being placed at the deadline. Orders placed after the call starts are not part of it. At most 500 orders per call; `has_more` says there are others.
          *
@@ -917,6 +919,11 @@ export interface components {
             /** @description Network code. */
             network: string;
         };
+        /**
+         * @description Unique identifier of a deposit.
+         * @example 507f1f77bcf86cd799439011
+         */
+        DepositId: string;
         /** @description A deposit. */
         DepositResponse: {
             /** @description Address that received it. */
@@ -998,7 +1005,7 @@ export interface components {
          *     Serialized as `SCREAMING_SNAKE_CASE`. Adding a variant is backwards-compatible; renaming or removing one is a breaking API change.
          * @enum {string}
          */
-        ErrorCode: "VALIDATION_FAILED" | "MALFORMED_REQUEST" | "INVALID_CURSOR" | "PRECISION_EXCEEDED" | "BELOW_MINIMUM" | "ABOVE_MAXIMUM" | "INVALID_ADDRESS" | "MEMO_REQUIRED" | "UNAUTHENTICATED" | "INVALID_CREDENTIALS" | "TOKEN_EXPIRED" | "SESSION_REVOKED" | "TWO_FACTOR_REQUIRED" | "TWO_FACTOR_INVALID" | "FRESH_TWO_FACTOR_REQUIRED" | "FORBIDDEN" | "API_KEY_NOT_ALLOWED" | "FUTURES_RESTRICTED" | "ACCOUNT_FROZEN" | "ACCOUNT_ON_HOLD" | "EMAIL_NOT_VERIFIED" | "REGION_BLOCKED" | "JURISDICTION_BLOCKED" | "NOT_FOUND" | "METHOD_NOT_ALLOWED" | "ALREADY_EXISTS" | "INVALID_STATE" | "IDEMPOTENCY_KEY_CONFLICT" | "WINDOW_OPEN" | "EVIDENCE_CONTRADICTS" | "AMOUNT_MISMATCH" | "CONCURRENT_MODIFICATION" | "INSUFFICIENT_FUNDS" | "INSUFFICIENT_FEE_FUNDS" | "MARKET_UNAVAILABLE" | "DEPOSIT_DISABLED" | "WITHDRAWAL_DISABLED" | "SELF_TRADE_BLOCKED" | "LIMIT_EXCEEDED" | "RATE_LIMITED" | "INTERNAL" | "SERVICE_UNAVAILABLE" | "UNDER_MAINTENANCE" | "ENGINE_OVERLOADED";
+        ErrorCode: "VALIDATION_FAILED" | "MALFORMED_REQUEST" | "INVALID_CURSOR" | "PRECISION_EXCEEDED" | "BELOW_MINIMUM" | "ABOVE_MAXIMUM" | "INVALID_ADDRESS" | "MEMO_REQUIRED" | "UNAUTHENTICATED" | "INVALID_CREDENTIALS" | "TOKEN_EXPIRED" | "SESSION_REVOKED" | "TWO_FACTOR_REQUIRED" | "TWO_FACTOR_INVALID" | "FRESH_TWO_FACTOR_REQUIRED" | "FORBIDDEN" | "API_KEY_NOT_ALLOWED" | "FUTURES_RESTRICTED" | "ACCOUNT_FROZEN" | "ACCOUNT_ON_HOLD" | "EMAIL_NOT_VERIFIED" | "REGION_BLOCKED" | "JURISDICTION_BLOCKED" | "NOT_FOUND" | "METHOD_NOT_ALLOWED" | "ALREADY_EXISTS" | "INVALID_STATE" | "IDEMPOTENCY_KEY_CONFLICT" | "WINDOW_OPEN" | "EVIDENCE_CONTRADICTS" | "AMOUNT_MISMATCH" | "CONCURRENT_MODIFICATION" | "INSUFFICIENT_FUNDS" | "INSUFFICIENT_FEE_FUNDS" | "MARKET_UNAVAILABLE" | "DEPOSIT_DISABLED" | "WITHDRAWAL_DISABLED" | "SELF_TRADE_BLOCKED" | "LIMIT_EXCEEDED" | "PRICE_UNAVAILABLE" | "RATE_LIMITED" | "INTERNAL" | "SERVICE_UNAVAILABLE" | "UNDER_MAINTENANCE" | "ENGINE_OVERLOADED";
         /** @description The top-level error envelope. */
         ErrorResponse: {
             error: components["schemas"]["ErrorBody"];
@@ -1109,14 +1116,15 @@ export interface components {
             /** @description Trade id. */
             trade_id: string;
         };
+        /**
+         * @description Unique identifier of a futures collateral transfer.
+         * @example 507f1f77bcf86cd799439011
+         */
+        FuturesTransferId: string;
         /** @description Adds liquidity to a pool. */
         JoinPoolRequest: {
             base_amount: components["schemas"]["Amount"];
-            /**
-             * @description How far, in percent, the offered ratio may sit from the pool's own before the request is refused rather than repriced. Defaults to 1%.
-             * @example 1
-             */
-            max_ratio_deviation_percent?: string | null;
+            max_ratio_deviation_percent?: components["schemas"]["Amount"] | null;
             quote_amount: components["schemas"]["Amount"];
         };
         /** @description What a join produced. */
@@ -1130,7 +1138,7 @@ export interface components {
          * @description What a ledger entry records.
          * @enum {string}
          */
-        LedgerEntryKind: "deposit" | "deposit_reversal" | "withdrawal_debit" | "withdrawal_fee" | "withdrawal_fee_reserve" | "withdrawal_release" | "withdrawal_fee_release" | "order_reserve" | "withdrawal_reserve" | "order_release" | "trade_debit" | "trade_credit" | "trade_fee" | "transfer_out" | "transfer_in" | "adjustment_credit" | "adjustment_debit" | "rebate" | "pool_join" | "pool_exit" | "futures_transfer_reserve" | "futures_transfer_release" | "futures_collateral_sent" | "futures_collateral_returned" | "trade_fee_revenue" | "withdrawal_fee_revenue" | "futures_transfer_fee_revenue" | "futures_hyperliquid_cost" | "futures_transfer_discrepancy" | "exchange_capital";
+        LedgerEntryKind: "deposit" | "deposit_reversal" | "withdrawal_debit" | "withdrawal_fee" | "withdrawal_fee_reserve" | "withdrawal_release" | "withdrawal_fee_release" | "order_reserve" | "withdrawal_reserve" | "order_release" | "trade_debit" | "trade_credit" | "trade_fee" | "transfer_out" | "transfer_in" | "transfer_in_held" | "transfer_release" | "transfer_reversal" | "adjustment_credit" | "adjustment_debit" | "rebate" | "pool_join" | "pool_exit" | "futures_transfer_reserve" | "futures_transfer_release" | "futures_collateral_sent" | "futures_collateral_returned" | "trade_fee_revenue" | "withdrawal_fee_revenue" | "withdrawal_refund" | "withdrawal_fee_revenue_reversal" | "futures_transfer_fee_revenue" | "futures_hyperliquid_cost" | "futures_transfer_discrepancy" | "exchange_capital";
         /** @description One entry from the account's ledger. */
         LedgerEntryResponse: {
             /** @description Asset symbol. */
@@ -1147,13 +1155,54 @@ export interface components {
             kind: components["schemas"]["LedgerEntryKind"];
             locked_delta: components["schemas"]["Amount"];
             pending_delta: components["schemas"]["Amount"];
-            /** @description What caused the entry. */
-            reference: unknown;
+            reference: components["schemas"]["LedgerReference"];
             /**
              * Format: int64
              * @description Position in this account's history for this asset.
              */
             sequence: number;
+        };
+        /** @description What caused a ledger entry: one kind of cause per variant, told apart by `type`. */
+        LedgerReference: {
+            deposit_id: components["schemas"]["DepositId"];
+            /** @enum {string} */
+            type: "deposit";
+        } | {
+            /** @enum {string} */
+            type: "withdrawal";
+            withdrawal_id: components["schemas"]["WithdrawalId"];
+        } | {
+            order_id: components["schemas"]["OrderId"];
+            /** @enum {string} */
+            type: "order";
+        } | {
+            order_id: components["schemas"]["OrderId"];
+            trade_id: components["schemas"]["TradeId"];
+            /** @enum {string} */
+            type: "trade";
+        } | {
+            counterparty_user_id: components["schemas"]["UserId"];
+            /** @description Shared reference linking both halves. */
+            transfer_ref: string;
+            /** @enum {string} */
+            type: "transfer";
+        } | {
+            operator_user_id: components["schemas"]["UserId"];
+            /** @enum {string} */
+            type: "adjustment";
+        } | {
+            pool_id: components["schemas"]["PoolId"];
+            /** @enum {string} */
+            type: "pool";
+        } | {
+            futures_transfer_id: components["schemas"]["FuturesTransferId"];
+            /** @enum {string} */
+            type: "futures_transfer";
+        } | {
+            /** @description Short machine-readable cause. */
+            cause: string;
+            /** @enum {string} */
+            type: "system";
         };
         /**
          * @description Whether a fill added liquidity (maker) or removed it (taker).
@@ -1314,6 +1363,11 @@ export interface components {
              */
             timestamp: string;
         };
+        /**
+         * @description Unique identifier of an order.
+         * @example 507f1f77bcf86cd799439011
+         */
+        OrderId: string;
         /** @description An order. */
         OrderResponse: {
             average_price?: components["schemas"]["Amount"] | null;
@@ -1417,6 +1471,11 @@ export interface components {
             order: components["schemas"]["OrderResponse"];
         };
         /**
+         * @description Unique identifier of a liquidity pool.
+         * @example 507f1f77bcf86cd799439011
+         */
+        PoolId: string;
+        /**
          * @description A pool as a client sees it.
          *
          *     Reserves are the custody account's balances, so they include liquidity currently locked in resting orders. `price` is the curve's mid, which sits between the pool's own best bid and ask by exactly its fee — it is not a traded price.
@@ -1518,12 +1577,22 @@ export interface components {
          */
         TimeInForce: "gtc" | "ioc" | "fok" | "post_only";
         /**
+         * @description Unique identifier of a trade.
+         * @example 507f1f77bcf86cd799439011
+         */
+        TradeId: string;
+        /**
          * @description Which way the price must move for a stop to fire.
          *
          *     Explicit rather than inferred from the side, because the inference is ambiguous: a sell stop below the market is a stop-loss, and a sell stop above it is a take-profit. Both are legitimate, and guessing wrong means an order that fires at exactly the wrong moment — which is the one thing a protective order must never do.
          * @enum {string}
          */
         TriggerDirection: "above" | "below";
+        /**
+         * @description Unique identifier of a user account.
+         * @example 507f1f77bcf86cd799439011
+         */
+        UserId: string;
         /** @description A saved withdrawal address. */
         WithdrawalAddressResponse: {
             /** @description The address. */
@@ -1562,6 +1631,11 @@ export interface components {
             reason?: string | null;
             status: components["schemas"]["WithdrawalStatus"];
         };
+        /**
+         * @description Unique identifier of a withdrawal.
+         * @example 507f1f77bcf86cd799439011
+         */
+        WithdrawalId: string;
         /** @description A withdrawal. */
         WithdrawalResponse: {
             /** @description Destination. */
@@ -1618,7 +1692,7 @@ export interface components {
          *     against the chain.
          * @enum {string}
          */
-        WithdrawalStatus: "requested" | "pending_approval" | "approved" | "processing" | "broadcast" | "completed" | "rejected" | "cancelled" | "failed" | "broadcast_unknown";
+        WithdrawalStatus: "requested" | "pending_approval" | "approved" | "processing" | "broadcast" | "completed" | "rejected" | "cancelled" | "failed" | "broadcast_unknown" | "reverted";
     };
     responses: never;
     parameters: never;

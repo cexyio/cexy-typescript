@@ -97,6 +97,7 @@ describe("error mapping", () => {
     [409, "ALREADY_EXISTS", ConflictError],
     [409, "IDEMPOTENCY_KEY_CONFLICT", ConflictError],
     [422, "MARKET_UNAVAILABLE", UnprocessableError],
+    [422, "PRICE_UNAVAILABLE", UnprocessableError],
     [503, "UNDER_MAINTENANCE", ServerError],
     [429, "RATE_LIMITED", RateLimitError],
   ])("%i %s", (status, code, cls) => {

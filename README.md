@@ -62,6 +62,9 @@ await cexy.trading.cancelAll({ symbol: "BTC/USDT" }); // { symbol: null } = ever
 `cancelAll` requires `symbol`: the server treats a missing symbol as "every market", so the SDK makes
 you say so with `{ symbol: null }`. An unknown symbol throws `NotFoundError`.
 
+It also cancels stop orders that have not triggered yet (status `pending_trigger`) and releases
+their reservations, so nothing fires into the market after the call.
+
 One call handles at most 500 orders and puts each in exactly one list: `cancelled`, `already_closed`
 (it filled, was refused or was cancelled elsewhere first; not an error) or `failed`, with the reason in
 `failures` (`INVALID_STATE` for an order still being placed). `has_more: true` means more orders remain.
@@ -184,6 +187,22 @@ for await (const order of cexy.trading.iterateOrderHistory({ symbol: "BTC/USDT",
 }
 // cap the total: cexy.account.iterateLedger({}, { maxItems: 500 })
 ```
+
+Each ledger entry's `reference` says what caused it, as a union told apart by `type` (`deposit`,
+`withdrawal`, `order`, `trade`, `transfer`, `adjustment`, `pool`, `futures_transfer`, `system`).
+Newer types the SDK does not know yet arrive unchanged instead of failing; narrow with
+`isLedgerReference`:
+
+```ts
+import { isLedgerReference } from "@cexyio/cexy";
+
+for await (const e of cexy.account.iterateLedger({}, { maxItems: 100 })) {
+  if (isLedgerReference(e.reference, "trade")) console.log(e.reference.trade_id);
+  else if (!isLedgerReference(e.reference)) console.log("new cause type:", e.reference.type);
+}
+```
+
+Ids (`OrderId`, `TradeId`, `UserId`, …) are plain strings; the SDK does not check their format.
 
 ## Rate limits
 

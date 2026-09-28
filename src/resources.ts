@@ -401,6 +401,8 @@ export class TradingResource extends Resource {
 
   /**
    * Cancels every open order in one market: `cancelAll({ symbol: "BTC/USDT" })`.
+   * This includes stop orders that have not triggered yet (status `pending_trigger`): they are
+   * cancelled and their reservations released, so nothing fires into the market afterwards.
    * To cancel across ALL markets, pass `symbol: null` explicitly: `cancelAll({ symbol: null })`.
    * Omitting `symbol` is an error, so an account-wide cancel never happens by accident
    * (the server itself treats `{}` as every market). An unknown symbol throws `NotFoundError`.
