@@ -13,6 +13,8 @@ export type ApiScope = S["ApiScope"];
 export type Asset = S["AssetResponse"];
 export type AssetNetwork = S["AssetNetworkResponse"];
 export type Balance = S["BalanceResponse"];
+/** An incoming internal transfer still held (see `Balance.held_incoming`). */
+export type HeldIncoming = S["HeldIncomingResponse"];
 export type CancelAllRequest = S["CancelAllRequest"];
 export type CancelAllResult = S["CancelAllResponse"];
 /** Why one order could not be cancelled (`CancelAllResult.failures`). */

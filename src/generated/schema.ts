@@ -836,6 +836,8 @@ export interface components {
             /** @description Asset symbol. */
             asset: string;
             available: components["schemas"]["Amount"];
+            /** @description Internal transfers to this account still held, soonest released first; empty when none. Their sum is part of `locked`. Shows at most 100. */
+            held_incoming: components["schemas"]["HeldIncomingResponse"][];
             locked: components["schemas"]["Amount"];
             pending: components["schemas"]["Amount"];
             total: components["schemas"]["Amount"];
@@ -1121,6 +1123,17 @@ export interface components {
          * @example 507f1f77bcf86cd799439011
          */
         FuturesTransferId: string;
+        /** @description An internal transfer credited to `locked` and not yet available. */
+        HeldIncomingResponse: {
+            amount: components["schemas"]["Amount"];
+            /**
+             * Format: date-time
+             * @description When it becomes available, unless an operator cancels it before then.
+             */
+            available_at: string;
+            /** @description The transfer. */
+            transfer_id: string;
+        };
         /** @description Adds liquidity to a pool. */
         JoinPoolRequest: {
             base_amount: components["schemas"]["Amount"];
