@@ -6,7 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-dev.7] (2026-09-29)
+
 ### Added
+- `account.subAccountBalances(id)`: a sub-account's balances, read by its parent account
+  (`GET /account/sub-accounts/{id}/balances`, read scope). Same shape as `balances()`, including
+  `held_incoming`. An id that is not the caller's sub-account gives `NotFoundError` (not retried).
 - `Balance.held_incoming` (and the `HeldIncoming` type): incoming internal transfers still held,
   `{ transfer_id, amount, available_at }`, at most 100, soonest first. Their sum is already included
   in `locked`: never add it again. `balances()` and `balance()` always return an array (`[]` when the

@@ -31,9 +31,9 @@ for (const [path, item] of Object.entries<any>(spec.paths)) {
 }
 
 describe("SDK surface covers exactly spec/openapi.sdk.json", () => {
-  it("has 40 operations in the spec and in the SDK", () => {
-    expect(specOps.length).toBe(40);
-    expect(Object.keys(OPERATIONS).length).toBe(40);
+  it("has 41 operations in the spec and in the SDK", () => {
+    expect(specOps.length).toBe(41);
+    expect(Object.keys(OPERATIONS).length).toBe(41);
   });
 
   it("operation ids, methods, paths, auth and scopes match the spec", () => {
@@ -69,7 +69,7 @@ describe("SDK surface covers exactly spec/openapi.sdk.json", () => {
       const target: any = ns ? (client as any)[ns] : client;
       expect(typeof target[fn], o.sdkMethod).toBe("function");
     }
-    expect(seen.size).toBe(40);
+    expect(seen.size).toBe(41);
   });
 
   it("generated types carry no implementation notes or stale spec metadata", () => {

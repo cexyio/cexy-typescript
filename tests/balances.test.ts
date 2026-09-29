@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Balance, HeldIncoming } from "../src/index.js";
-import { ok, testClient } from "./helpers.js";
+import { CexyConfigError, NotFoundError, type Balance, type HeldIncoming } from "../src/index.js";
+import { json, ok, testClient } from "./helpers.js";
 
 const base = { asset: "USDT", available: "90.00", locked: "10.00", pending: "0", total: "100.00" };
 const held: HeldIncoming[] = [
@@ -25,5 +25,37 @@ describe("held_incoming", () => {
     const { client } = testClient({ replies: [ok([base]), ok(base)] });
     expect((await client.account.balances())[0]!.held_incoming).toEqual([]);
     expect((await client.account.balance("USDT")).held_incoming).toEqual([]);
+  });
+});
+
+describe("subAccountBalances", () => {
+  it("GETs the sub-account path (id encoded as one segment) with credentials", async () => {
+    const { client, calls } = testClient({ replies: [ok([{ ...base, held_incoming: held }])] });
+    const rows = await client.account.subAccountBalances("sub/1 ?x");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.method).toBe("GET");
+    expect(calls[0]!.url.pathname).toBe("/api/v1/account/sub-accounts/sub%2F1%20%3Fx/balances");
+    expect(calls[0]!.headers.get("x-api-key")).toBeTruthy();
+    expect(calls[0]!.headers.get("idempotency-key")).toBeNull();
+    expect(rows[0]!.held_incoming).toEqual(held);
+  });
+
+  it("defaults held_incoming to [] when the server omits it", async () => {
+    const { client } = testClient({ replies: [ok([base])] });
+    expect((await client.account.subAccountBalances("sub_1"))[0]!.held_incoming).toEqual([]);
+  });
+
+  it("maps 404 to NotFoundError, with exactly one request (no retry)", async () => {
+    const { client, calls } = testClient({
+      replies: [json(404, { error: { code: "NOT_FOUND", message: "no such sub-account", retryable: false } })],
+    });
+    await expect(client.account.subAccountBalances("other")).rejects.toBeInstanceOf(NotFoundError);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("rejects an empty id before any request", async () => {
+    const { client, calls } = testClient();
+    await expect(client.account.subAccountBalances("")).rejects.toBeInstanceOf(CexyConfigError);
+    expect(calls).toHaveLength(0);
   });
 });

@@ -202,6 +202,17 @@ export class AccountResource extends Resource {
   subAccounts(opts?: RequestOptions): Promise<SubAccount[]> {
     return this.data({ op: "list_sub_accounts" }, opts);
   }
+  /**
+   * A sub-account's balances, read by its PARENT account: the same shape as `balances()`
+   * (zero balances omitted, sorted by asset), including `held_incoming`, whose sum is already
+   * inside `locked`. An id that is not one of the caller's sub-accounts (or a call with the
+   * sub-account's own key) gets `NotFoundError`; a sub-account's own key reads its balances with
+   * `balances()`. `id` must be non-empty; it is sent as one URL path segment.
+   */
+  async subAccountBalances(id: string, opts?: RequestOptions): Promise<Balance[]> {
+    const rows = await this.data<Balance[]>({ op: "sub_account_balances", pathParams: { id } }, opts);
+    return Array.isArray(rows) ? rows.map(withHeldIncoming) : rows;
+  }
   /** Your API keys (metadata only; secrets are never returned). */
   apiKeys(opts?: RequestOptions): Promise<ApiKey[]> {
     return this.data({ op: "list_api_keys" }, opts);
