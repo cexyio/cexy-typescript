@@ -55,7 +55,9 @@ describe("subAccountBalances", () => {
 
   it("maps a 404 with no retryable field to NotFoundError, with exactly one request", async () => {
     const { client, calls } = testClient({ replies: [json(404, { error: { code: "NOT_FOUND", message: "no such sub-account" } })] });
-    await expect(client.account.subAccountBalances("other")).rejects.toBeInstanceOf(NotFoundError);
+    const err = await client.account.subAccountBalances("other").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NotFoundError);
+    expect((err as NotFoundError).retryable).toBe(false);
     expect(calls).toHaveLength(1);
   });
 
@@ -63,7 +65,9 @@ describe("subAccountBalances", () => {
     const { client, calls } = testClient({
       replies: [new Response("<html>not found</html>", { status: 404, headers: { "content-type": "text/html" } })],
     });
-    await expect(client.account.subAccountBalances("other")).rejects.toBeInstanceOf(NotFoundError);
+    const err = await client.account.subAccountBalances("other").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NotFoundError);
+    expect((err as NotFoundError).retryable).toBe(false);
     expect(calls).toHaveLength(1);
   });
 

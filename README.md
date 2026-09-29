@@ -162,7 +162,8 @@ try {
 ## Retries and idempotency
 
 - Timeout per attempt: `timeoutMs` (default 10 s). Retries: `maxRetries` (default 3), exponential backoff with full jitter.
-- Retried: network errors, timeouts and responses with `retryable: true`.
+- Retried: network errors, timeouts and responses with `retryable: true` (and 409 `CONCURRENT_MODIFICATION`).
+  A 4xx is never retried except 429 and 409 `CONCURRENT_MODIFICATION`, whatever its body says.
 - 429 waits at least `Retry-After` / `details.retry_after_seconds`. Server wait hints are untrusted: unusable
   values are ignored, and a hint longer than 120 s (`MAX_SERVER_WAIT_MS`) is never waited: the call fails at
   once with `RateLimitError`, whose `retryAfterMs` still has the server's value. The client-side rate limiter

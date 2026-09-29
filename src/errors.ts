@@ -174,7 +174,7 @@ export function isKnownErrorCode(code: string): code is KnownErrorCode {
   return KNOWN_CODES.has(code);
 }
 
-const DEFAULT_RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const DEFAULT_RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 
 /**
  * The longest wait the SDK accepts from a server hint (`Retry-After`, `retry_after_seconds`,
