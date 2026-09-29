@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `Balance.held_incoming` (and the `HeldIncoming` type): incoming internal transfers still held,
+  `{ transfer_id, amount, available_at }`, at most 100, soonest first. Their sum is already included
+  in `locked`: never add it again. `balances()` and `balance()` always return an array (`[]` when the
+  server omits the field).
+
 ## [0.1.0-dev.6] (2026-09-28)
 
 Synced with the API's H-1 release (spec in cexy-api-spec at fc3ce5c).

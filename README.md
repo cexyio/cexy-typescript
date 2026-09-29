@@ -106,6 +106,13 @@ asset/network (later calls return the same one). Always use the `memo` too when 
 
 There are no withdrawal or transfer methods: API keys cannot withdraw or transfer funds.
 
+**Held incoming transfers.** Each balance has `held_incoming`: incoming internal transfers still
+held, as `{ transfer_id, amount, available_at }`. Their sum is **already included in `locked`**, so
+never add them to `locked` or `total` again. There are at most 100 entries, soonest `available_at`
+first (millisecond precision), with no sender identity. An entry disappears once the transfer is
+released (the amount moves to `available`) or cancelled by the exchange. It is always an array
+(`[]` when none, including from servers that predate the field).
+
 ## Amounts
 
 Every amount is an exact decimal **string** (`"0.00150000"`), in responses and requests. JS numbers are

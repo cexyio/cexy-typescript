@@ -159,12 +159,30 @@ export class PoolsResource extends Resource {
 // Private (API key, read scope unless stated)
 // ---------------------------------------------------------------------------------------
 
+/**
+ * `held_incoming` lists incoming internal transfers still held (at most 100, soonest `available_at`
+ * first; `available_at` has millisecond precision; no sender identity). Their sum is ALREADY
+ * INCLUDED in `locked`: never add them to `locked` or `total` again. An entry disappears once the
+ * transfer is released (its amount moves to `available`) or cancelled by the exchange. Always an
+ * array: servers that predate the field decode as `[]`.
+ */
+function withHeldIncoming(b: Balance): Balance {
+  if (!b || typeof b !== "object" || Array.isArray(b.held_incoming)) return b;
+  return { ...b, held_incoming: [] };
+}
+
 export class AccountResource extends Resource {
-  balances(opts?: RequestOptions): Promise<Balance[]> {
-    return this.data({ op: "list_balances" }, opts);
+  /**
+   * Balances per asset. `held_incoming` lists incoming internal transfers still held; their sum is
+   * already included in `locked` (never add it again). Always an array (`[]` when none).
+   */
+  async balances(opts?: RequestOptions): Promise<Balance[]> {
+    const rows = await this.data<Balance[]>({ op: "list_balances" }, opts);
+    return Array.isArray(rows) ? rows.map(withHeldIncoming) : rows;
   }
-  balance(asset: string, opts?: RequestOptions): Promise<Balance> {
-    return this.data({ op: "get_balance", pathParams: { asset } }, opts);
+  /** One asset's balance. `held_incoming`: incoming transfers still held, already inside `locked`. */
+  async balance(asset: string, opts?: RequestOptions): Promise<Balance> {
+    return withHeldIncoming(await this.data<Balance>({ op: "get_balance", pathParams: { asset } }, opts));
   }
   ledger(params?: Q<"get_ledger">, opts?: RequestOptions): Promise<Page<LedgerEntry>> {
     return this.page({ op: "get_ledger", query: params }, opts);
