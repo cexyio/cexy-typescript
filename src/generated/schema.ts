@@ -108,6 +108,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/account/sub-accounts/{id}/balances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A sub-account's balances, for its parent.
+         * @description The same shape as `/account/balances`, zero balances omitted: what the sub-account holds, so its funds can be shown and moved back. Only the parent may read it; any id that is not one of the caller's sub-accounts is not found.
+         */
+        get: operations["sub_account_balances"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/assets": {
         parameters: {
             query?: never;
@@ -1886,6 +1906,49 @@ export interface operations {
                     "application/json": {
                         data: components["schemas"]["SubAccountResponse"][];
                     };
+                };
+            };
+        };
+    };
+    sub_account_balances: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Sub-account id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The sub-account's balances */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BalanceResponse"][];
+                    };
+                };
+            };
+            /** @description Malformed sub-account id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description No such sub-account on this account */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

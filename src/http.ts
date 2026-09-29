@@ -78,6 +78,13 @@ export interface RawResponse {
 /** Operations on which the server honours `Idempotency-Key`: the only ones that send it. */
 const IDEMPOTENT_OPS: ReadonlySet<OperationId> = new Set<OperationId>(["join_pool", "exit_pool"]);
 
+/**
+ * Mutations `request()` may retry: pool join/exit (the server honours their `Idempotency-Key`)
+ * and cancel-all (naturally repeatable). Any other mutation sent through `request()` is never
+ * retried; `placeOrder` and `cancelOrder` have their own policies on top of `attempt()`.
+ */
+const REPEAT_SAFE_MUTATIONS: ReadonlySet<OperationId> = new Set<OperationId>(["join_pool", "exit_pool", "cancel_all"]);
+
 const BACKOFF_BASE_MS = 500;
 const BACKOFF_MAX_MS = 10_000;
 
@@ -92,13 +99,14 @@ export class Transport {
    * Sends a request with the standard retry policy: retryable errors and network failures are
    * retried. Pool join/exit carry an `Idempotency-Key` reused on every attempt (the server
    * honours it there, which makes their retries safe); the other mutations routed here
-   * (cancel-all) are naturally repeatable and send no key. `placeOrder` and `cancelOrder` use
-   * `attempt()` with their own policies.
+   * (cancel-all) are naturally repeatable and send no key. Any other mutation is sent once.
+   * `placeOrder` and `cancelOrder` use `attempt()` with their own policies.
    */
   async request(spec: CallSpec, opts: RequestOptions = {}): Promise<RawResponse> {
     const info = OPERATIONS[spec.op];
     const idempotencyKey = IDEMPOTENT_OPS.has(spec.op) ? (spec.idempotencyKey ?? opts.idempotencyKey ?? newId()) : undefined;
-    const maxRetries = opts.maxRetries ?? this.config.maxRetries;
+    const repeatSafe = info.method === "GET" || REPEAT_SAFE_MUTATIONS.has(spec.op);
+    const maxRetries = repeatSafe ? (opts.maxRetries ?? this.config.maxRetries) : 0;
     for (let attempt = 0; ; attempt++) {
       try {
         return await this.attempt({ ...spec, idempotencyKey }, opts);
@@ -237,6 +245,9 @@ export class Transport {
     const path = info.path.replace(/\{(\w+)\}/g, (_m, name: string) => {
       const v = pathParams[name];
       if (typeof v !== "string" || v === "") throw new CexyConfigError(`${info.sdkMethod}(): ${name} is required`);
+      // "." and ".." would be dot segments: the URL layer resolves them (even as %2E), so the
+      // request would silently go to a different route.
+      if (v === "." || v === "..") throw new CexyConfigError(`${info.sdkMethod}(): ${name} must not be "." or ".."`);
       return encodeURIComponent(v);
     });
     const url = new URL(this.config.baseUrl.replace(/\/+$/, "") + path);
@@ -261,10 +272,18 @@ export function serverHintMs(err: unknown): number | null {
   return null;
 }
 
-/** Retryable = a network failure/timeout, or an API error with `retryable: true` (incl. 409 CONCURRENT_MODIFICATION). */
+/**
+ * Retryable = a network failure/timeout, or an API error with `retryable: true` (incl. 409
+ * CONCURRENT_MODIFICATION). A 4xx is never retryable except 429 and 409 CONCURRENT_MODIFICATION,
+ * whatever its body says.
+ */
 export function isRetryable(err: unknown): boolean {
   if (err instanceof CexyConnectionError) return true;
-  if (err instanceof CexyApiError) return err.retryable || err.code === "CONCURRENT_MODIFICATION";
+  if (err instanceof CexyApiError) {
+    const concurrent = err.code === "CONCURRENT_MODIFICATION";
+    if (err.status >= 400 && err.status < 500 && err.status !== 429 && !(err.status === 409 && concurrent)) return false;
+    return err.retryable || concurrent;
+  }
   return false;
 }
 

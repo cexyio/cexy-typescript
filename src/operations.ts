@@ -44,6 +44,7 @@ export const OPERATIONS = {
   get_ledger: op("GET", "/api/v1/account/ledger", "api_key", "read", "account.ledger"),
   list_notifications: op("GET", "/api/v1/account/notifications", "api_key", "read", "account.notifications"),
   list_sub_accounts: op("GET", "/api/v1/account/sub-accounts", "api_key", "read", "account.subAccounts"),
+  sub_account_balances: op("GET", "/api/v1/account/sub-accounts/{id}/balances", "api_key", "read", "account.subAccountBalances"),
   list_api_keys: op("GET", "/api/v1/account/api-keys", "api_key", "read", "account.apiKeys"),
   // Exports (read)
   export_deposits: op("GET", "/api/v1/exports/deposits", "api_key", "read", "exports.deposits"),

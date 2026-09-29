@@ -20,6 +20,7 @@ export const INVOKE: Record<OperationId, (c: CexyClient) => Promise<unknown>> = 
   get_ledger: (c) => c.account.ledger({ limit: 5 }),
   list_notifications: (c) => c.account.notifications({ unread_only: true }),
   list_sub_accounts: (c) => c.account.subAccounts(),
+  sub_account_balances: (c) => c.account.subAccountBalances("sub_1"),
   list_api_keys: (c) => c.account.apiKeys(),
   export_deposits: (c) => c.exports.deposits({ from: "2026-01-01T00:00:00Z" }),
   export_ledger: (c) => c.exports.ledger(),

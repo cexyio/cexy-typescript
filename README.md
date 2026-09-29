@@ -46,6 +46,8 @@ const cexy = new CexyClient({
 });
 
 const balances = await cexy.account.balances();
+// A sub-account's balances (parent account only; same shape, incl. held_incoming):
+const subBalances = await cexy.account.subAccountBalances("sub-account-id");
 const open = await cexy.trading.openOrders({ symbol: "BTC/USDT" });
 
 const placed = await cexy.trading.placeOrder({
@@ -94,7 +96,7 @@ Give both `apiKey` and `apiSecret`, or neither: passing only one throws at const
 | `markets` | `list`, `get`, `orderbook`, `trades`, `iterateTrades`, `candles` | public |
 | `assets`, `networks`, `fees`, `pools` | `list`, `get` / `list` / `get` / `list`, `get` | public |
 | `time()`, `config()` | | public |
-| `account` | `balances`, `balance`, `ledger`, `notifications`, `subAccounts`, `apiKeys` (+ iterators) | read |
+| `account` | `balances`, `balance`, `ledger`, `notifications`, `subAccounts`, `subAccountBalances`, `apiKeys` (+ iterators) | read |
 | `exports` | `deposits`, `ledger`, `orders`, `trades`, `withdrawals` (CSV text) | read |
 | `wallet` | `deposits`, `deposit`, `withdrawals`, `withdrawal`, `withdrawalAddresses`, `depositAddress` (+ iterators) | read |
 | `trading` | `openOrders`, `order`, `orderByClientId`, `orderHistory`, `trades` (+ iterators) | read |
@@ -160,7 +162,8 @@ try {
 ## Retries and idempotency
 
 - Timeout per attempt: `timeoutMs` (default 10 s). Retries: `maxRetries` (default 3), exponential backoff with full jitter.
-- Retried: network errors, timeouts and responses with `retryable: true`.
+- Retried: network errors, timeouts and responses with `retryable: true` (and 409 `CONCURRENT_MODIFICATION`).
+  A 4xx is never retried except 429 and 409 `CONCURRENT_MODIFICATION`, whatever its body says.
 - 429 waits at least `Retry-After` / `details.retry_after_seconds`. Server wait hints are untrusted: unusable
   values are ignored, and a hint longer than 120 s (`MAX_SERVER_WAIT_MS`) is never waited: the call fails at
   once with `RateLimitError`, whose `retryAfterMs` still has the server's value. The client-side rate limiter
@@ -292,7 +295,7 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 ## For tool builders
 
 The package exports its building blocks: the `OPERATIONS` table (method, path, auth and scope for each of the
-40 operations), all model types, the error classes, `paginate()`, `RateLimiter`, the `Authenticator`
+41 operations), all model types, the error classes, `paginate()`, `RateLimiter`, the `Authenticator`
 interface (HMAC signing will plug in here) and `userAgentSuffix` to identify your tool.
 
 ## Development

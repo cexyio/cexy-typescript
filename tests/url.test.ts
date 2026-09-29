@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { CexyClient, CexyConfigError, CexyWebSocket, CexyWebSocketError } from "../src/index.js";
-import { mockFetch } from "./helpers.js";
+import { OPERATIONS } from "../src/operations.js";
+import { Transport } from "../src/http.js";
+import { mockFetch, ok, testClient } from "./helpers.js";
 
 const f = () => mockFetch().fetch;
 
@@ -40,5 +42,55 @@ describe("transport security: https:// and wss:// only", () => {
     const local = new CexyClient({ fetch: f(), baseUrl: "http://127.0.0.1", allowInsecure: true });
     expect(local.websocket().url).toBe("ws://127.0.0.1/api/v1/ws");
     expect(() => new CexyClient({ fetch: f() }).websocket({ url: "ws://127.0.0.1/api/v1/ws" })).toThrow(CexyWebSocketError);
+  });
+});
+
+describe("path values stay one segment", () => {
+  const t = new Transport({
+    baseUrl: "https://api.cexy.io",
+    timeoutMs: 1000,
+    maxRetries: 0,
+    fetch: f(),
+    authenticator: null,
+    limiter: null,
+    userAgent: null,
+    sleep: async () => {},
+    random: () => 0.5,
+  });
+  const build = (id: string) => t.buildUrl(OPERATIONS.sub_account_balances, { id });
+
+  it("the builder rejects \".\" and \"..\" (the URL layer would resolve them, even as %2E)", () => {
+    expect(() => build(".")).toThrow(CexyConfigError);
+    expect(() => build("..")).toThrow(/must not be "." or ".."/);
+  });
+
+  it("other values, dots included, are encoded into exactly one segment", () => {
+    const cases: Array<[string, string]> = [
+      ["a/b", "a%2Fb"],
+      ["%2F", "%252F"],
+      ["a?b", "a%3Fb"],
+      ["a#b", "a%23b"],
+      ["é✓", "%C3%A9%E2%9C%93"],
+      ["%2e%2e", "%252e%252e"],
+      ["a b", "a%20b"],
+      ["...", "..."],
+      [".a", ".a"],
+    ];
+    for (const [id, seg] of cases) {
+      const url = build(id);
+      expect(url.pathname, id).toBe(`/api/v1/account/sub-accounts/${seg}/balances`);
+      expect(url.search, id).toBe("");
+      expect(url.hash, id).toBe("");
+    }
+  });
+
+  it("a GET and a mutation reject \".\" and \"..\" with no request", async () => {
+    const { client, calls } = testClient({ fallback: ok({}) });
+    for (const v of [".", ".."]) {
+      await expect(client.trading.orderByClientId(v)).rejects.toBeInstanceOf(CexyConfigError);
+      await expect(client.trading.cancelOrder(v)).rejects.toBeInstanceOf(CexyConfigError);
+      await expect(client.pools.join(v, { base_amount: "1", quote_amount: "2" })).rejects.toBeInstanceOf(CexyConfigError);
+    }
+    expect(calls).toHaveLength(0);
   });
 });
