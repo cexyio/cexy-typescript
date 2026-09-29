@@ -6,7 +6,9 @@ import {
   OrderStateUnknownError,
   ValidationError,
 } from "../src/index.js";
-import { json, networkError, ok, order, testClient } from "./helpers.js";
+import { ApiKeyAuthenticator } from "../src/auth.js";
+import { Transport } from "../src/http.js";
+import { json, mockFetch, networkError, ok, order, TEST_KEY, TEST_SECRET, testClient } from "./helpers.js";
 
 const svc = (retryable = true) => json(503, { error: { code: "SERVICE_UNAVAILABLE", message: "busy", retryable } });
 const notFound = () => json(404, { error: { code: "NOT_FOUND", message: "no such order", retryable: false } });
@@ -92,6 +94,50 @@ describe("mutations", () => {
     const { client, calls } = testClient({ fallback: ok([]) });
     await client.markets.list();
     expect(calls[0]!.headers.has("Idempotency-Key")).toBe(false);
+  });
+
+  it("never retries a 4xx other than 429 and 409 CONCURRENT_MODIFICATION, whatever the body says", async () => {
+    for (const [status, code] of [[400, "VALIDATION_FAILED"], [404, "NOT_FOUND"], [408, "HTTP_408"], [409, "ALREADY_EXISTS"], [422, "INVALID_STATE"]] as const) {
+      const { client, calls } = testClient({ replies: [json(status, { error: { code, message: "x", retryable: true } })], fallback: ok([]) });
+      await expect(client.markets.list(), `${status} ${code}`).rejects.toThrow();
+      expect(calls.length, `${status} ${code}`).toBe(1);
+    }
+  });
+
+  it("still retries 429 and 409 CONCURRENT_MODIFICATION", async () => {
+    for (const [status, code] of [[429, "RATE_LIMITED"], [409, "CONCURRENT_MODIFICATION"]] as const) {
+      const { client, calls } = testClient({ replies: [json(status, { error: { code, message: "x", retryable: true } })], fallback: ok([]) });
+      await client.markets.list();
+      expect(calls.length, code).toBe(2);
+    }
+  });
+
+  it("a mutation that is not repeat-safe is sent once, even on 409 CONCURRENT_MODIFICATION retryable: true", async () => {
+    // No public method routes such a mutation through the shared retry loop (placeOrder and
+    // cancelOrder have their own policies), so exercise the transport rule directly.
+    const m = mockFetch([json(409, { error: { code: "CONCURRENT_MODIFICATION", message: "busy", retryable: true } })], () => ok({}));
+    const t = new Transport({
+      baseUrl: "https://api.cexy.io",
+      timeoutMs: 1000,
+      maxRetries: 3,
+      fetch: m.fetch,
+      authenticator: new ApiKeyAuthenticator(TEST_KEY, TEST_SECRET),
+      limiter: null,
+      userAgent: null,
+      sleep: async () => {},
+      random: () => 0.5,
+    });
+    await expect(t.request({ op: "place_order", body: { symbol: "BTC/USDT" } })).rejects.toBeInstanceOf(ConflictError);
+    expect(m.calls.length).toBe(1);
+    expect(m.calls[0]!.headers.has("Idempotency-Key")).toBe(false);
+  });
+
+  it("placeOrder does not retry a 409 other than CONCURRENT_MODIFICATION, even retryable: true", async () => {
+    const { client, calls } = testClient({
+      replies: [json(409, { error: { code: "ALREADY_EXISTS", message: "client order id in use", retryable: true } })],
+    });
+    await expect(client.trading.placeOrder({ ...req })).rejects.toBeInstanceOf(ConflictError);
+    expect(calls.length).toBe(1);
   });
 
   it("IDEMPOTENCY_KEY_CONFLICT is not retried", async () => {

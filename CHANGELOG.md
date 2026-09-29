@@ -17,6 +17,19 @@ All notable changes to this project are documented here. The format follows
   in `locked`: never add it again. `balances()` and `balance()` always return an array (`[]` when the
   server omits the field).
 
+### Changed
+- A 4xx response is never retried except 429 and 409 `CONCURRENT_MODIFICATION`, even when its body
+  says `retryable: true` (a 408 is no longer retried either). 409 `CONCURRENT_MODIFICATION` and 429
+  are still retried only where they were before. A mutation sent through the shared retry loop is
+  retried only when it is repeat-safe (pool join/exit with their `Idempotency-Key`, cancel-all);
+  `placeOrder` and `cancelOrder` keep their own policies.
+
+### Security
+- Path values `"."` and `".."` are rejected with `CexyConfigError`: previously they escaped their URL
+  segment, so e.g. `subAccountBalances("..")` returned the parent's own balances and
+  `orderByClientId("..")` the open-orders list. Read-only operations only; no write request could be
+  redirected.
+
 ## [0.1.0-dev.6] (2026-09-28)
 
 Synced with the API's H-1 release (spec in cexy-api-spec at fc3ce5c).

@@ -204,10 +204,13 @@ export class AccountResource extends Resource {
   }
   /**
    * A sub-account's balances, read by its PARENT account: the same shape as `balances()`
-   * (zero balances omitted, sorted by asset), including `held_incoming`, whose sum is already
-   * inside `locked`. An id that is not one of the caller's sub-accounts (or a call with the
-   * sub-account's own key) gets `NotFoundError`; a sub-account's own key reads its balances with
-   * `balances()`. `id` must be non-empty; it is sent as one URL path segment.
+   * (zero balances omitted), including `held_incoming`, whose sum is already inside `locked`.
+   * The server currently returns them ordered by asset symbol; don't rely on the order.
+   * An id that is not one of the caller's sub-accounts (or a call with the sub-account's own
+   * key) gets `NotFoundError`; a sub-account's own key reads its balances with `balances()`.
+   * A malformed id gets 400 (`ValidationError`); a key without the `read` scope gets 403
+   * `FORBIDDEN` (`ForbiddenError`). `id` must be non-empty and not "." or ".."; it is sent as
+   * one URL path segment.
    */
   async subAccountBalances(id: string, opts?: RequestOptions): Promise<Balance[]> {
     const rows = await this.data<Balance[]>({ op: "sub_account_balances", pathParams: { id } }, opts);

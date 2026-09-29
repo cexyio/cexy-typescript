@@ -53,6 +53,37 @@ describe("subAccountBalances", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("maps a 404 with no retryable field to NotFoundError, with exactly one request", async () => {
+    const { client, calls } = testClient({ replies: [json(404, { error: { code: "NOT_FOUND", message: "no such sub-account" } })] });
+    await expect(client.account.subAccountBalances("other")).rejects.toBeInstanceOf(NotFoundError);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("maps a non-JSON 404 body to NotFoundError, with exactly one request", async () => {
+    const { client, calls } = testClient({
+      replies: [new Response("<html>not found</html>", { status: 404, headers: { "content-type": "text/html" } })],
+    });
+    await expect(client.account.subAccountBalances("other")).rejects.toBeInstanceOf(NotFoundError);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("does not retry a 404 even when its body says retryable: true", async () => {
+    const { client, calls } = testClient({
+      replies: [json(404, { error: { code: "NOT_FOUND", message: "no such sub-account", retryable: true } })],
+      fallback: ok([base]),
+    });
+    await expect(client.account.subAccountBalances("other")).rejects.toBeInstanceOf(NotFoundError);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("rejects \".\" and \"..\" before any request", async () => {
+    const { client, calls } = testClient();
+    for (const id of [".", ".."]) {
+      await expect(client.account.subAccountBalances(id)).rejects.toBeInstanceOf(CexyConfigError);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
   it("rejects an empty id before any request", async () => {
     const { client, calls } = testClient();
     await expect(client.account.subAccountBalances("")).rejects.toBeInstanceOf(CexyConfigError);
