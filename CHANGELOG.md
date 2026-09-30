@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- Dev dependency: `esbuild` is forced to `^0.28.1` through `overrides` (tsup 8.5.1 still asks for
+  `^0.27`). This fixes a low-severity advisory in esbuild's development server on Windows, which
+  this project does not use. The published build is byte-identical with 0.27.7 and 0.28.2, so no
+  release is needed for it.
+
 ## [0.1.0-dev.8] (2026-09-30)
 
 ### Fixed
