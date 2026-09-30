@@ -65,7 +65,11 @@ export interface SessionRevokedData {
 interface EventBase<T extends string, D> {
   type: T;
   channel: string;
-  /** Per channel, +1 per update. Resets when the server restarts. */
+  /**
+   * Public channels: per channel, +1 per update, resets when the server restarts. Private
+   * channels: per topic (this account's channel on one server instance); the first frame after
+   * `subscribed` is the baseline. The client reports gaps (`sequenceGap`).
+   */
   sequence?: number;
   timestamp?: string;
   data: D;
@@ -79,7 +83,22 @@ export type TickerUpdateEvent = EventBase<"ticker.update", Data>;
 export type TradeNewEvent = EventBase<"trade.new", Data>;
 export type MarketStatusEvent = EventBase<"market.status", Data>;
 export type OrderEvent = EventBase<"order.created" | "order.updated" | "order.cancelled" | "order.filled", Order>;
-export type BalanceUpdatedEvent = EventBase<"balance.updated", Data>;
+/** `balance.updated` data. `sequence` is the balance's own sequence (same as REST `Balance.sequence`). */
+export interface BalanceUpdatedData {
+  asset: string;
+  available: string;
+  locked: string;
+  pending: string;
+  total: string;
+  /** Never decreases; may skip values or repeat (a skip is not a loss). */
+  sequence: number;
+}
+
+export type BalanceUpdatedEvent = EventBase<"balance.updated", BalanceUpdatedData>;
+/** The server could not resume its balance change stream: events may be missing. Refetch balances. */
+export type BalancesResyncEvent = EventBase<"balances.resync", Record<string, never>>;
+/** Planned server frame: refetch the deposit or withdrawal list (events may be missing). */
+export type ListResyncEvent = EventBase<"deposits.resync" | "withdrawals.resync", Record<string, never>>;
 export type DepositEvent = EventBase<"deposit.detected" | "deposit.updated" | "deposit.completed", Data>;
 export type WithdrawalUpdatedEvent = EventBase<"withdrawal.updated", Data>;
 
@@ -92,6 +111,8 @@ export type WsEvent =
   | MarketStatusEvent
   | OrderEvent
   | BalanceUpdatedEvent
+  | BalancesResyncEvent
+  | ListResyncEvent
   | DepositEvent
   | WithdrawalUpdatedEvent;
 
@@ -110,6 +131,9 @@ export const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set<WsEvent["type"]>([
   "deposit.completed",
   "withdrawal.updated",
   "session.revoked",
+  "balances.resync",
+  "deposits.resync",
+  "withdrawals.resync",
 ]);
 
 /** Channels that need `auth`. */

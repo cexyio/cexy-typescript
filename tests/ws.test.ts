@@ -547,3 +547,105 @@ describe("private sign-outs (beyond the conformance script)", () => {
     expect(srv.conns[0]!.received.filter((x) => x.op === "subscribe")[2].channels).toEqual(["orders"]);
   });
 });
+
+describe("LiveBalances with a server that sends no data.sequence", () => {
+  it("applies unsequenced events, keeps the stored sequence, and warns once", async () => {
+    srv = await startFakeServer();
+    const logger = quietLogger();
+    ws = new CexyWebSocket({ url: srv.url, allowInsecure: true, reconnect: false, logger });
+    await ws.connect();
+    await ws.auth("session_access_token_placeholder");
+    const snapshot = vi.fn(async () => [
+      { asset: "USDT", available: "100", locked: "0", pending: "0", total: "100", held_incoming: [], sequence: 40 },
+    ]);
+    const lb = await ws.liveBalances({ snapshot, accountId: "usr_test_1" });
+    await srv.until(() => !lb.stale, "first snapshot");
+    const push = (data: Record<string, unknown>) =>
+      srv!.conns[0]!.send({ type: "balance.updated", channel: "balances", data: { available: "0", locked: "0", pending: "0", ...data } });
+    push({ asset: "USDT", total: "90" });
+    push({ asset: "USDT", total: "80" });
+    await ws.ping();
+    expect(lb.get("USDT")).toMatchObject({ total: "80", sequence: 40 });
+    expect(logger.warn.mock.calls.filter((c) => String(c[0]).includes("without data.sequence")).length).toBe(1);
+    // A sequenced event takes over again.
+    push({ asset: "USDT", total: "70", sequence: 41 });
+    push({ asset: "USDT", total: "60", sequence: 41 });
+    await ws.ping();
+    expect(lb.get("USDT")).toMatchObject({ total: "70", sequence: 41 });
+    lb.close();
+  });
+});
+
+describe("liveBalances() from CexyClient.websocket()", () => {
+  it("uses account.id() and account.balances() by default, and refuses another account", async () => {
+    srv = await startFakeServer();
+    const rest = {
+      markets: { orderbook: vi.fn() },
+      account: {
+        balances: vi.fn(async () => [{ asset: "USDT", available: "1", locked: "0", pending: "0", total: "1", held_incoming: [], sequence: 3 }]),
+        id: vi.fn(async () => "someone_else"),
+      },
+    };
+    ws = new CexyWebSocket({ url: srv.url, allowInsecure: true, reconnect: false, restClient: rest });
+    await ws.connect();
+    await ws.auth("session_access_token_placeholder");
+    const lb = await ws.liveBalances();
+    await srv.until(() => lb.lastError !== null, "mismatch");
+    expect(lb.lastError?.code).toBe("ACCOUNT_MISMATCH");
+    expect(rest.account.id).toHaveBeenCalledTimes(1);
+    expect(rest.account.balances).not.toHaveBeenCalled();
+    expect(lb.all()).toEqual([]);
+    lb.close();
+  });
+});
+
+describe("dev.9 review fixes", () => {
+  it("a custom snapshot source without ownerId/accountId is a CONFIG error, even with a restClient", async () => {
+    srv = await startFakeServer();
+    const rest = { markets: { orderbook: vi.fn() }, account: { balances: vi.fn(async () => []), id: vi.fn(async () => "usr_test_1") } };
+    ws = new CexyWebSocket({ url: srv.url, allowInsecure: true, reconnect: false, restClient: rest });
+    await ws.connect();
+    await ws.auth("session_access_token_placeholder");
+    await expect(ws.liveBalances({ snapshot: async () => [] })).rejects.toMatchObject({ code: "CONFIG" });
+    expect(rest.account.id).not.toHaveBeenCalled();
+  });
+
+  it("events are not buffered while the owner is unverified and no snapshot is in flight", async () => {
+    srv = await startFakeServer();
+    let owner = "someone_else";
+    const snapshot = vi.fn(async () => [{ asset: "USDT", available: "5", locked: "0", pending: "0", total: "5", held_incoming: [], sequence: 10 }]);
+    ws = new CexyWebSocket({ url: srv.url, allowInsecure: true, reconnect: false });
+    await ws.connect();
+    await ws.auth("session_access_token_placeholder");
+    const lb = await ws.liveBalances({ snapshot, ownerId: async () => owner, minSnapshotIntervalMs: 0 });
+    await srv.until(() => lb.lastError !== null, "mismatch");
+    for (let i = 0; i < 500; i++) {
+      srv.conns[0]!.send({ type: "balance.updated", channel: "balances", data: { asset: "USDT", available: "9", locked: "0", pending: "0", total: "9", sequence: 50 + i } });
+    }
+    await ws.ping();
+    expect(lb.bufferedEvents).toBe(0);
+    owner = "usr_test_1";
+    srv.conns[0]!.send({ type: "balances.resync", channel: "balances", data: {} });
+    await srv.until(() => !lb.stale, "snapshot after the owner matches");
+    expect(lb.get("USDT")).toMatchObject({ total: "5", sequence: 10 }); // the dropped events were not applied
+    lb.close();
+  });
+
+  it("signed_out: revoked gives the documented synthetic authLost; a missing reason gives code unknown", async () => {
+    srv = await startFakeServer();
+    ws = new CexyWebSocket({ url: srv.url, allowInsecure: true, reconnect: false });
+    await ws.connect();
+    await ws.auth("session_access_token_placeholder");
+    const lost: unknown[] = [];
+    const changes: { reason: string; code?: string }[] = [];
+    ws.on("authLost", (e) => lost.push(e));
+    ws.on("authChanged", (c) => changes.push(c));
+    srv.conns[0]!.send({ type: "signed_out", reason: "revoked" });
+    await ws.ping();
+    expect(lost).toEqual([{ type: "session.revoked", channel: "account", data: { session_id: null, reason: "signed_out", current: true } }]);
+    await ws.auth("session_access_token_placeholder_2");
+    srv.conns[0]!.send({ type: "signed_out" });
+    await ws.ping();
+    expect(changes.at(-1)).toMatchObject({ reason: "signed_out", code: "unknown" });
+  });
+});

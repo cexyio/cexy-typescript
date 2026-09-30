@@ -1,6 +1,7 @@
 import { CexyError } from "../errors.js";
 import { assertSecureUrl } from "../url.js";
-import type { OrderBook } from "../types.js";
+import type { Balance, OrderBook } from "../types.js";
+import { LiveBalances, type LiveBalancesOptions } from "./balances.js";
 import { TypedEmitter } from "./emitter.js";
 import { LiveOrderBook, type LiveOrderBookOptions } from "./orderbook.js";
 import {
@@ -37,6 +38,39 @@ const TEARDOWN_CODES: ReadonlySet<string> = new Set(["DISCONNECTED", "CLOSED"]);
 /** Where order-book snapshots come from (a `CexyClient` fits). */
 export interface SnapshotSource {
   markets: { orderbook(symbol: string, params?: { depth?: number | null }): Promise<OrderBook> };
+  /** Balance snapshots and the key owner's id, for `liveBalances()` (a `CexyClient` fits). */
+  account?: { balances(): Promise<Balance[]>; id?(): Promise<string> };
+}
+
+/**
+ * TEST-ONLY time source for the client's reorder-window timer and `LiveBalances` scheduling
+ * (minimum snapshot interval, retry backoff). Socket timeouts (heartbeat, liveness, acks) always
+ * use the real clock. Leave unset in production: the default is `Date.now` and `setTimeout`.
+ */
+export interface WsClock {
+  now(): number;
+  setTimeout(fn: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+export const REAL_CLOCK: WsClock = {
+  now: () => Date.now(),
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+};
+
+/** Payload of `sequenceGap`. */
+export interface SequenceGap {
+  channel: string;
+  expected: number;
+  received: number;
+}
+
+interface SeqState {
+  next: number | null;
+  holes: Set<number>;
+  first: SequenceGap | null;
+  timer: unknown;
 }
 
 export interface WsLogger {
@@ -82,6 +116,14 @@ export interface CexyWebSocketOptions {
   /** Sent as User-Agent when the implementation allows headers (the `ws` package). */
   userAgent?: string;
   logger?: WsLogger;
+  /**
+   * Private channels with several publishers (orders, account) can deliver two adjacent frames
+   * swapped. A missing sequence number gets this long to arrive before it counts as a gap.
+   * Default 250 ms.
+   */
+  reorderWindowMs?: number;
+  /** TEST-ONLY: see `WsClock`. */
+  clock?: WsClock;
   /** @internal deterministic jitter in tests */
   random?: () => number;
 }
@@ -105,10 +147,24 @@ export interface CloseInfo {
  * `reauth`: private channels were re-subscribed after the server signed the connection out
  * or switched it to another account; refetch private state through REST.
  */
-export type ResyncReason = "concurrent_modification" | "reconnect" | "reauth";
+export type ResyncReason =
+  | "concurrent_modification"
+  | "reconnect"
+  | "reauth"
+  /** A private channel skipped sequence numbers (see `sequenceGap`). */
+  | "sequence_gap"
+  /** `balances.resync`: the server could not resume its balance change stream. */
+  | "balances_resync"
+  /** `deposits.resync` (planned server frame): refetch the deposit list. */
+  | "deposits_resync"
+  /** `withdrawals.resync` (planned server frame): refetch the withdrawal list. */
+  | "withdrawals_resync";
 
-/** Why the server stopped the connection's private subscriptions (see `authChanged`). */
-export type AuthChangeReason = "user_changed" | "auth_failed" | "session_revoked";
+/**
+ * Why the server stopped the connection's private subscriptions (see `authChanged`). May grow:
+ * `signed_out` covers a server sign-out with a reason this SDK does not know (raw value in `code`).
+ */
+export type AuthChangeReason = "user_changed" | "auth_failed" | "session_revoked" | "token_expired" | "signed_out";
 
 /** Payload of `authChanged`. */
 export interface AuthChange {
@@ -117,7 +173,7 @@ export interface AuthChange {
   previousUserId: string | null;
   /** The new user (`user_changed`), otherwise null: the connection is signed out. */
   userId: string | null;
-  /** The server's error code (`auth_failed` only). */
+  /** The server's error code (`auth_failed`), or the raw `signed_out` reason (`signed_out`). */
   code?: string;
   /**
    * Private channels the server dropped. They are re-subscribed automatically: at once for
@@ -148,8 +204,11 @@ export interface CexyWebSocketEvents extends Record<string, unknown[]> {
   /** State may have been missed: refetch anything you keep from private or public channels. */
   resync: [ResyncReason];
   /**
-   * `session.revoked` arrived: private channels are dead. The socket stays open; public
-   * channels keep working. Call `auth()` with a new token to restore private channels.
+   * This connection's own session was revoked (`session.revoked` with `current: true`, or
+   * the `signed_out` frame with reason `revoked`, delivered as a synthetic event with
+   * `channel: "account"` and `data: { session_id: null, reason: "signed_out", current: true }`).
+   * Private channels are dead; the socket stays open and public channels keep working. Call
+   * `auth()` with a new token to restore private channels.
    */
   authLost: [SessionRevokedEvent];
   /**
@@ -158,6 +217,11 @@ export interface CexyWebSocketEvents extends Record<string, unknown[]> {
    * connection's own session was revoked (`session.revoked` with `current: true`).
    */
   authChanged: [AuthChange];
+  /**
+   * A private channel skipped sequence numbers on this connection (after the reorder window):
+   * events were lost. Followed by `resync` with `"sequence_gap"`; refetch that channel's state.
+   */
+  sequenceGap: [SequenceGap];
 }
 
 /** Result of `auth()`. */
@@ -215,6 +279,10 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   #authUserId: string | null = null;
   /** Private channels dropped by a server sign-out, re-subscribed after the next successful auth. */
   #pendingPrivate = new Set<string>();
+  /** Frame-sequence tracking per private channel on the current connection. */
+  #seq = new Map<string, SeqState>();
+  readonly #clock: WsClock;
+  readonly #reorderWindowMs: number;
   #closedByUser = true;
   #everConnected = false;
   #reconnectAttempt = 0;
@@ -227,6 +295,9 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   #windowCount = 0;
   #warnedVersion = false;
   #books = new Map<string, LiveOrderBook>();
+  #liveBalances = new Set<LiveBalances>();
+  /** `balances` was subscribed by `liveBalances()` (unsubscribed when the last helper closes). */
+  #balancesByHelper = false;
   #connecting: Promise<WelcomeFrame> | null = null;
 
   constructor(options: CexyWebSocketOptions = {}) {
@@ -265,6 +336,8 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     this.#restClient = options.restClient;
     this.#userAgent = options.userAgent;
     this.#ctorOption = options.WebSocket;
+    this.#clock = options.clock ?? REAL_CLOCK;
+    this.#reorderWindowMs = options.reorderWindowMs ?? 250;
   }
 
   /** The last `welcome` frame, or null before the first connection. */
@@ -287,6 +360,21 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
    */
   get hasToken(): boolean {
     return this.#token !== null;
+  }
+
+  /** The user of the last successful `auth` on the current connection, or null (signed out). */
+  get userId(): string | null {
+    return this.#authUserId;
+  }
+
+  /** @internal the logger for helpers (`LiveBalances`) */
+  get logger(): WsLogger {
+    return this.#logger;
+  }
+
+  /** @internal the time source for helpers (`LiveBalances`) */
+  get clock(): WsClock {
+    return this.#clock;
   }
 
   /** Opens the connection; resolves on the server's `welcome` frame. */
@@ -362,7 +450,10 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
    * without one); rejects on an `error` with the request id.
    */
   async unsubscribe(channels: string[]): Promise<void> {
-    for (const c of channels) this.#pendingPrivate.delete(c);
+    for (const c of channels) {
+      this.#pendingPrivate.delete(c);
+      this.#resetSeq(c);
+    }
     const held = [...new Set(channels)].filter((c) => this.#channels.delete(c));
     if (held.length && this.connected) await this.#request("unsubscribe", { channels: held }, held, false);
   }
@@ -393,10 +484,55 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     return book;
   }
 
+  /**
+   * Live balances of the authenticated account: subscribes `balances`, takes a REST snapshot,
+   * applies newer `balance.updated` events and refetches by itself when events may be missing.
+   * Call `auth()` first. Snapshots come from `restClient.account.balances()` (use
+   * `CexyClient.websocket()`) or `options.snapshot`. The snapshot source's owner
+   * (`restClient.account.id()`, or `options.ownerId` / `options.accountId`, required with a custom
+   * `snapshot`) must equal the WebSocket's authenticated user, otherwise nothing is merged
+   * (`ACCOUNT_MISMATCH`). It is checked at the start and again after every account change.
+   */
+  async liveBalances(options: LiveBalancesOptions = {}): Promise<LiveBalances> {
+    const account = this.#restClient?.account;
+    const snapshot = options.snapshot ?? (account ? () => account.balances() : undefined);
+    if (!snapshot) throw new CexyWebSocketError("CONFIG", "liveBalances() needs options.snapshot or restClient (use CexyClient.websocket())");
+    const fixed = options.accountId;
+    // The REST key's account is the owner only of the REST key's own snapshots: a custom snapshot
+    // source must name its owner.
+    const accountId = options.snapshot ? undefined : account?.id?.bind(account);
+    const ownerId = options.ownerId ?? (fixed !== undefined ? () => Promise.resolve(fixed) : accountId);
+    if (!ownerId) {
+      throw new CexyWebSocketError("CONFIG", "liveBalances() needs options.ownerId or options.accountId to check the snapshot's account");
+    }
+    const helper = new LiveBalances(this, { ...options, snapshot, ownerId });
+    this.#liveBalances.add(helper);
+    const res = await this.subscribe(["balances"]);
+    if (res.refused.length) {
+      helper.close();
+      throw new CexyWebSocketError("LOCAL_SUBSCRIPTION_LIMIT", "cannot subscribe to balances: cap reached");
+    }
+    if (!res.alreadySubscribed.includes("balances")) this.#balancesByHelper = true;
+    // Acknowledged now: the `subscribed` reply already triggered the first snapshot. Held already
+    // (by the caller or another helper): no reply comes, so start here.
+    if (res.alreadySubscribed.includes("balances")) helper.start();
+    return helper;
+  }
+
+  /** @internal a `LiveBalances` closed */
+  releaseBalances(helper: LiveBalances): void {
+    this.#liveBalances.delete(helper);
+    if (this.#liveBalances.size === 0 && this.#balancesByHelper) {
+      this.#balancesByHelper = false;
+      void this.unsubscribe(["balances"]).catch(() => {});
+    }
+  }
+
   /** Closes the connection for good (no reconnect). */
   close(): void {
     this.#closedByUser = true;
     this.#authUserId = null;
+    this.#resetSeq();
     if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = null;
     for (const b of [...this.#books.values()]) b.markDisconnected();
@@ -497,6 +633,7 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
       );
     }
     this.#authUserId = null; // a new connection starts signed out
+    this.#resetSeq(); // sequences on a new connection are unrelated
     const isReconnect = this.#everConnected;
     this.#everConnected = true;
     this.#reconnectAttempt = 0;
@@ -557,8 +694,31 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
             }
           }
         }
-        if (type === "subscribed") this.emit("subscribed", channels);
+        if (type === "subscribed") {
+          for (const c of channels) this.#resetSeq(c); // the next frame is the new baseline
+          this.emit("subscribed", channels);
+        }
         else this.emit("unsubscribed", channels);
+        return;
+      }
+      case "signed_out": {
+        // signed_out (a planned server frame): the server signed this connection out (token expired, session
+        // revoked, or a future reason). Private subscriptions are gone; a fresh auth on this socket restores
+        // them.
+        const raw = typeof frame["reason"] === "string" && frame["reason"] !== "" ? frame["reason"] : "unknown";
+        this.#token = null;
+        if (raw === "revoked") {
+          this.#signedOut("session_revoked");
+          this.emit("authLost", {
+            type: "session.revoked",
+            channel: "account",
+            data: { session_id: null, reason: "signed_out", current: true },
+          });
+        } else if (raw === "expired") {
+          this.#signedOut("token_expired");
+        } else {
+          this.#signedOut("signed_out", raw);
+        }
         return;
       }
       case "error": {
@@ -594,10 +754,16 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
       return;
     }
     const event = frame as unknown as WsEvent;
+    if (PRIVATE_CHANNELS.has(event.channel) && typeof event.sequence === "number") this.#trackSeq(event.channel, event.sequence);
     // Only this connection's own session signs it out (the server checks current == true
     // exactly); current false, missing or not a boolean changes nothing.
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- wire data may not match the type
     if (event.type === "session.revoked" && event.data?.current === true) this.#onAuthLost(event);
+    if (event.type === "balances.resync" || event.type === "deposits.resync" || event.type === "withdrawals.resync") {
+      this.emit("event", event);
+      this.emit("resync", event.type === "balances.resync" ? "balances_resync" : event.type === "deposits.resync" ? "deposits_resync" : "withdrawals_resync");
+      return;
+    }
     if (event.type === "orderbook.update") {
       const symbol = event.channel.startsWith("orderbook:") ? event.channel.slice("orderbook:".length) : event.data?.symbol;
       if (symbol) this.#books.get(symbol)?.onUpdate(event);
@@ -612,6 +778,50 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     this.emit("authLost", event);
   }
 
+  /** Forgets the sequence baseline of `channel` (all channels when omitted). */
+  #resetSeq(channel?: string): void {
+    const states = channel === undefined ? [...this.#seq.values()] : [this.#seq.get(channel)].filter((x) => x !== undefined);
+    for (const st of states) if (st.timer !== null) this.#clock.clearTimeout(st.timer);
+    if (channel === undefined) this.#seq.clear();
+    else this.#seq.delete(channel);
+  }
+
+  /**
+   * Frame-sequence tracking for a private channel: the first frame is the baseline, a lower
+   * number is late (never a gap), and a higher one opens holes that must fill within the
+   * reorder window.
+   */
+  #trackSeq(channel: string, n: number): void {
+    const st = this.#seq.get(channel);
+    if (!st || st.next === null) {
+      this.#seq.set(channel, { next: n + 1, holes: new Set(), first: null, timer: null });
+      return;
+    }
+    if (n < st.next) {
+      if (st.holes.delete(n) && st.holes.size === 0 && st.timer !== null) {
+        this.#clock.clearTimeout(st.timer);
+        st.timer = null;
+        st.first = null;
+      }
+      return;
+    }
+    for (let m = st.next; m < n; m++) st.holes.add(m);
+    if (n > st.next && st.first === null) st.first = { channel, expected: st.next, received: n };
+    st.next = n + 1;
+    if (st.holes.size > 0 && st.timer === null) {
+      const state = st;
+      state.timer = this.#clock.setTimeout(() => {
+        state.timer = null;
+        if (state.holes.size === 0 || this.#seq.get(channel) !== state) return;
+        const gap = state.first ?? { channel, expected: Math.min(...state.holes), received: (state.next ?? 1) - 1 };
+        state.holes.clear();
+        state.first = null;
+        this.emit("sequenceGap", gap);
+        this.emit("resync", "sequence_gap");
+      }, this.#reorderWindowMs);
+    }
+  }
+
   /** Moves the held private channels to the pending set; returns them. */
   #dropPrivate(): string[] {
     const dropped = [...this.#channels].filter((c) => PRIVATE_CHANNELS.has(c));
@@ -623,9 +833,10 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   }
 
   /** The server signed the connection out and dropped every private subscription. */
-  #signedOut(reason: "auth_failed" | "session_revoked", code?: string): void {
+  #signedOut(reason: Exclude<AuthChangeReason, "user_changed">, code?: string): void {
     const previousUserId = this.#authUserId;
     this.#authUserId = null;
+    for (const c of PRIVATE_CHANNELS) this.#resetSeq(c);
     const dropped = this.#dropPrivate();
     const change: AuthChange = { reason, previousUserId, userId: null, dropped };
     if (code !== undefined) change.code = code;
@@ -637,6 +848,7 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     const previousUserId = this.#authUserId;
     this.#authUserId = userId;
     if (previousUserId !== null && userId !== previousUserId) {
+      for (const c of PRIVATE_CHANNELS) this.#resetSeq(c);
       const dropped = this.#dropPrivate();
       this.emit("authChanged", { reason: "user_changed", previousUserId, userId, dropped });
     }

@@ -28,6 +28,17 @@ describe("held_incoming", () => {
   });
 });
 
+describe("account.id", () => {
+  it("GETs /account/id with credentials and returns the user id", async () => {
+    const { client, calls } = testClient({ replies: [ok({ user_id: "aaaa0001" })] });
+    expect(await client.account.id()).toBe("aaaa0001");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.method).toBe("GET");
+    expect(calls[0]!.url.pathname).toBe("/api/v1/account/id");
+    expect(calls[0]!.headers.get("x-api-key")).toBeTruthy();
+  });
+});
+
 describe("subAccountBalances", () => {
   it("GETs the sub-account path (id encoded as one segment) with credentials", async () => {
     const { client, calls } = testClient({ replies: [ok([{ ...base, held_incoming: held }])] });
