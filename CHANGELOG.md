@@ -19,7 +19,8 @@ All notable changes to this project are documented here. The format follows
   server's single-use challenge. It re-signs the new challenge after each reconnect, stops
   automatic key re-auth after a refused key, and reports `key_revoked` / `key_expired` sign-outs.
   `CexyClient.websocket()` passes the signer when the client uses `auth: "hmac"`. `AuthResult.auth`
-  says how the connection is authenticated.
+  says how the connection is authenticated. A signature that finishes after the connection changed is
+  dropped (`STALE_CHALLENGE`); the new connection signs its own challenge.
 
 ### Changed
 - Query strings are built with RFC 3986 encoding (`%20` for a space, `%2B` for a plus) instead of

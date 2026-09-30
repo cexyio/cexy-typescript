@@ -83,7 +83,52 @@ afterEach(async () => {
   server = null;
 });
 
-/** An independent verifier (node:crypto, written from the spec text, not the SDK's code). */
+// An independent canonicaliser, written from the spec text (not the SDK's code), so the recording
+// server catches canonicalisation bugs too.
+const indepDecode = (s: string): Buffer =>
+  Buffer.concat(
+    s.split(/(%[0-9A-Fa-f]{2})/).map((p) => (/^%[0-9A-Fa-f]{2}$/.test(p) ? Buffer.from([parseInt(p.slice(1), 16)]) : Buffer.from(p, "utf8"))),
+  );
+const isUnreserved = (x: number): boolean =>
+  (x >= 0x30 && x <= 0x39) || (x >= 0x41 && x <= 0x5a) || (x >= 0x61 && x <= 0x7a) || [0x2d, 0x2e, 0x5f, 0x7e].includes(x);
+const indepEncode = (b: Buffer): string =>
+  [...b].map((x) => (isUnreserved(x) ? String.fromCharCode(x) : `%${x.toString(16).toUpperCase().padStart(2, "0")}`)).join("");
+const indepPath = (path: string): string =>
+  path
+    .split("/")
+    .map((seg) => indepEncode(indepDecode(seg)))
+    .join("/");
+const indepQuery = (query: string): string =>
+  query
+    .split("&")
+    .filter((part) => part !== "")
+    .map((part) => {
+      const eq = part.indexOf("=");
+      const [n, v] = eq < 0 ? [part, ""] : [part.slice(0, eq), part.slice(eq + 1)];
+      return [indepEncode(indepDecode(n)), indepEncode(indepDecode(v))] as const;
+    })
+    .sort((a, b) => Buffer.compare(Buffer.from(a[0]), Buffer.from(b[0])) || Buffer.compare(Buffer.from(a[1]), Buffer.from(b[1])))
+    .map(([n, v]) => `${n}=${v}`)
+    .join("&");
+
+describe("independent canonicaliser", () => {
+  it("agrees with the vectors, so the recording server's check is trustworthy", () => {
+    for (const c of V.rest) {
+      const [path, query] = split(c.request_target);
+      expect(indepPath(path)).toBe(c.canonical_path);
+      expect(indepQuery(query)).toBe(c.canonical_query);
+    }
+  });
+
+  it("empty query parts are dropped and only the separator '?' is stripped (server rules)", () => {
+    expect(canonicalQuery("a=1&&b=2&")).toBe("a=1&b=2");
+    expect(indepQuery("a=1&&b=2&")).toBe("a=1&b=2");
+    expect(canonicalQuery("?a=1")).toBe("%3Fa=1"); // the query of "/p??a=1"
+    expect(indepQuery("?a=1")).toBe("%3Fa=1");
+  });
+});
+
+/** An independent verifier (node:crypto and the canonicaliser above, not the SDK's code). */
 function verify(method: string, rawTarget: string, body: Buffer, h: IncomingMessage["headers"]): boolean {
   const q = rawTarget.indexOf("?");
   const path = q < 0 ? rawTarget : rawTarget.slice(0, q);
@@ -91,8 +136,8 @@ function verify(method: string, rawTarget: string, body: Buffer, h: IncomingMess
   const canonical = [
     "CEXY-HMAC-SHA256-v1",
     method,
-    canonicalPath(path),
-    canonicalQuery(query),
+    indepPath(path),
+    indepQuery(query),
     String(h["x-api-timestamp"]),
     String(h["x-api-nonce"]),
     createHash("sha256").update(body).digest("hex"),

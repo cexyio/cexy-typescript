@@ -310,6 +310,8 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   #challenge: string | null = null;
   /** `authKey()` is the active credential (re-sent with each new challenge after reconnects). */
   #keyAuth = false;
+  /** Request ids of auth_key frames sent on the current connection (a late refusal still counts). */
+  #authKeyIds = new Set<string>();
   #closedByUser = true;
   #everConnected = false;
   #reconnectAttempt = 0;
@@ -793,6 +795,10 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
             if (pending.kind === "auth" || pending.kind === "auth_key") this.#signedOut("auth_failed", f.code);
             // A refused key is not tried again automatically (5 failures close the socket).
             if (pending.kind === "auth_key") this.#keyAuth = false;
+          } else if (this.#authKeyIds.has(id)) {
+            // A refusal that arrived after the timeout: the server signed the connection out.
+            this.#keyAuth = false;
+            this.#signedOut("auth_failed", f.code);
           }
         }
         this.emit("serverError", err, f);
@@ -939,6 +945,7 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
    */
   #request(kind: RequestKind, payload: Record<string, unknown>, channels: string[], strict: boolean): Promise<Record<string, unknown> | null> {
     const id = this.#newId();
+    if (kind === "auth_key") this.#authKeyIds.add(id);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#pending.delete(id);
@@ -991,7 +998,14 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
       throw new CexyWebSocketError("NO_CHALLENGE", "authKey(): the server has not issued a challenge on this connection");
     }
     this.#challenge = null; // a challenge is signed at most once
+    const socket = this.#socket;
+    const welcome = this.#welcome;
     const { keyId, signature } = await signer.signWebSocketChallenge(connectionId, challenge);
+    // The signer may be slow (a KMS or HSM): if the connection changed meanwhile, the signature
+    // is for the old one. Drop it; the new connection signs its own challenge.
+    if (this.#socket !== socket || this.#welcome !== welcome) {
+      throw new CexyWebSocketError("STALE_CHALLENGE", "authKey(): the connection changed while signing; the new connection authenticates itself");
+    }
     const ack = await this.#request("auth_key", { key_id: keyId, signature }, [], true);
     const userId = ack && typeof ack["user_id"] === "string" ? ack["user_id"] : null;
     const auth = ack && typeof ack["auth"] === "string" ? ack["auth"] : undefined;
@@ -1074,6 +1088,7 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     if (this.#socket) this.#detach(this.#socket);
     this.#socket = null;
     this.#welcome = null;
+    this.#authKeyIds.clear();
     for (const p of this.#pending.values()) {
       clearTimeout(p.timer);
       p.reject(err);

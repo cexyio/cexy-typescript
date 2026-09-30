@@ -61,11 +61,15 @@ export function canonicalPath(path: string): string {
     .join("/");
 }
 
-/** Canonical query: split on "&"; decode and re-encode names and values; sort bytewise. */
+/**
+ * Canonical query: split on "&" (empty parts dropped); decode and re-encode names and values; sort
+ * bytewise. `query` is everything after the FIRST "?" of the request target, so a further "?" is
+ * data.
+ */
 export function canonicalQuery(query: string): string {
-  const q = query.startsWith("?") ? query.slice(1) : query;
-  if (q === "") return "";
-  const pairs = q.split("&").map((part) => {
+  if (query === "") return "";
+  const parts = query.split("&").filter((part) => part !== ""); // "a=1&&b=2" is "a=1&b=2"
+  const pairs = parts.map((part) => {
     const eq = part.indexOf("=");
     const name = eq < 0 ? part : part.slice(0, eq);
     const value = eq < 0 ? "" : part.slice(eq + 1);
@@ -176,7 +180,7 @@ export class HmacAuthenticator implements Authenticator {
   async authenticate(request: AuthRequest): Promise<void> {
     const timestamp = String(this.#now() + this.#offsetMs);
     const nonce = this.#nonce();
-    const canonical = await canonicalRequest(request.method, request.url.pathname, request.url.search, timestamp, nonce, request.body);
+    const canonical = await canonicalRequest(request.method, request.url.pathname, request.url.search.slice(1), timestamp, nonce, request.body);
     request.headers.delete("X-API-Secret");
     request.headers.set("X-API-Key", this.#key);
     request.headers.set("X-API-Timestamp", timestamp);
