@@ -649,3 +649,24 @@ describe("dev.9 review fixes", () => {
     expect(changes.at(-1)).toMatchObject({ reason: "signed_out", code: "unknown" });
   });
 });
+
+describe("dev.9 follow-ups", () => {
+  it("events received during the owner lookup are dropped on a mismatch", async () => {
+    srv = await startFakeServer();
+    ws = new CexyWebSocket({ url: srv.url, allowInsecure: true, reconnect: false });
+    await ws.connect();
+    await ws.auth("session_access_token_placeholder");
+    let answer: (id: string) => void = () => {};
+    const lb = await ws.liveBalances({ snapshot: async () => [], ownerId: () => new Promise<string>((r) => (answer = r)) });
+    await srv.until(() => srv!.conns[0]!.received.some((m) => m.op === "subscribe"), "subscribe");
+    for (let i = 0; i < 5; i++) {
+      srv.conns[0]!.send({ type: "balance.updated", channel: "balances", data: { asset: "USDT", available: "1", locked: "0", pending: "0", total: "1", sequence: i + 1 } });
+    }
+    await ws.ping();
+    expect(lb.bufferedEvents).toBe(5); // held while the owner lookup is in flight
+    answer("someone_else");
+    await srv.until(() => lb.lastError !== null, "mismatch");
+    expect(lb.bufferedEvents).toBe(0);
+    lb.close();
+  });
+});

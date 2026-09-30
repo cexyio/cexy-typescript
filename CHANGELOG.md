@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- `LiveBalances`: events that arrived while the owner lookup was in flight are dropped when the
+  lookup ends in `ACCOUNT_MISMATCH` (they were kept until the next snapshot).
+
 ## [0.1.0-dev.9] (2026-09-30)
 
 ### Added

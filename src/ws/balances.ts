@@ -204,6 +204,7 @@ export class LiveBalances extends TypedEmitter<LiveBalancesEvents> {
         if (owner !== this.#ws.userId || owner !== wsUser) {
           this.#rows.clear();
           this.#tombstones.clear();
+          this.#buffer = []; // events that arrived during the owner lookup
           this.#fetching = false;
           this.#again = null;
           this.lastError = new AccountMismatchError(wsUser, owner);
