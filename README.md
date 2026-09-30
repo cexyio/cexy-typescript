@@ -268,6 +268,17 @@ What the client does for you:
 use public channels and poll REST for private state. If the session is revoked, the client emits
 `authLost`; public channels keep working.
 
+The server ends private subscriptions, without any frame, when `auth()` succeeds as another
+user, when an `auth()` fails (any error signs the connection out), or when this connection's own
+session is revoked (`session.revoked` with `current: true`). The client emits `authChanged`
+(`reason`: `user_changed`, `auth_failed` or `session_revoked`, plus the `dropped` channels) and
+re-subscribes those channels itself: at once for another user, after the next successful
+`auth()` otherwise, followed by `resync` with `"reauth"` (refetch private state).
+
+```ts
+ws.on("authChanged", ({ reason, dropped }) => console.warn(`private channels ended (${reason}):`, dropped));
+```
+
 In Node the client uses the optional `ws` package when installed (so it can send the SDK User-Agent),
 otherwise the global `WebSocket` (Node, browsers).
 
