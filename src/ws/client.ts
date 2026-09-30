@@ -699,8 +699,9 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
         return;
       }
       case "signed_out": {
-        // signed_out (a planned server frame): the server signed this connection out (token expired, session revoked, or a
-        // future reason). Private subscriptions are gone; a fresh auth on this socket restores them.
+        // signed_out (a planned server frame): the server signed this connection out (token expired, session
+        // revoked, or a future reason). Private subscriptions are gone; a fresh auth on this socket restores
+        // them.
         const raw = typeof frame["reason"] === "string" ? frame["reason"] : "";
         this.#token = null;
         if (raw === "revoked") {
