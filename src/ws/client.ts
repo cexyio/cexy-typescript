@@ -488,16 +488,19 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
    * Live balances of the authenticated account: subscribes `balances`, takes a REST snapshot,
    * applies newer `balance.updated` events and refetches by itself when events may be missing.
    * Call `auth()` first. Snapshots come from `restClient.account.balances()` (use
-   * `CexyClient.websocket()`) or `options.snapshot`; before every merge the snapshot source's
-   * owner (`restClient.account.id()`, `options.ownerId` or `options.accountId`) must equal the
-   * WebSocket's authenticated user, otherwise nothing is merged (`ACCOUNT_MISMATCH`).
+   * `CexyClient.websocket()`) or `options.snapshot`. The snapshot source's owner
+   * (`restClient.account.id()`, or `options.ownerId` / `options.accountId`, required with a custom
+   * `snapshot`) must equal the WebSocket's authenticated user, otherwise nothing is merged
+   * (`ACCOUNT_MISMATCH`). It is checked at the start and again after every account change.
    */
   async liveBalances(options: LiveBalancesOptions = {}): Promise<LiveBalances> {
     const account = this.#restClient?.account;
     const snapshot = options.snapshot ?? (account ? () => account.balances() : undefined);
     if (!snapshot) throw new CexyWebSocketError("CONFIG", "liveBalances() needs options.snapshot or restClient (use CexyClient.websocket())");
     const fixed = options.accountId;
-    const accountId = account?.id?.bind(account);
+    // The REST key's account is the owner only of the REST key's own snapshots: a custom snapshot
+    // source must name its owner.
+    const accountId = options.snapshot ? undefined : account?.id?.bind(account);
     const ownerId = options.ownerId ?? (fixed !== undefined ? () => Promise.resolve(fixed) : accountId);
     if (!ownerId) {
       throw new CexyWebSocketError("CONFIG", "liveBalances() needs options.ownerId or options.accountId to check the snapshot's account");
@@ -702,7 +705,7 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
         // signed_out (a planned server frame): the server signed this connection out (token expired, session
         // revoked, or a future reason). Private subscriptions are gone; a fresh auth on this socket restores
         // them.
-        const raw = typeof frame["reason"] === "string" ? frame["reason"] : "";
+        const raw = typeof frame["reason"] === "string" && frame["reason"] !== "" ? frame["reason"] : "unknown";
         this.#token = null;
         if (raw === "revoked") {
           this.#signedOut("session_revoked");

@@ -11,7 +11,7 @@ export interface LiveBalancesOptions {
   snapshot?: () => Promise<Balance[]>;
   /**
    * The user id the snapshot source belongs to, compared with the WebSocket's authenticated
-   * user before every merge. Default: `restClient.account.id()` (GET /api/v1/account/id).
+   * user at the start and after every account change. Default: `restClient.account.id()` (GET /api/v1/account/id).
    */
   ownerId?: () => Promise<string>;
   /** A fixed owner user id instead of `ownerId`. */
@@ -58,8 +58,8 @@ const ZERO = /^[+-]?0*(\.0*)?$/;
  * Rules: an event applies only if its `data.sequence` is greater than the stored one for that
  * asset; a total of 0 removes the row (a snapshot row at or below that sequence cannot bring it
  * back). A new snapshot is taken on a frame gap, `balances.resync`, `CONCURRENT_MODIFICATION`, a
- * reconnect and after an account change, never because `data.sequence` skipped values. Before
- * every merge the snapshot source's owner is checked against the WebSocket user.
+ * reconnect and after an account change, never because `data.sequence` skipped values. At
+ * the start and after every account change the snapshot source's owner is checked against the WebSocket user.
  */
 export class LiveBalances extends TypedEmitter<LiveBalancesEvents> {
   /** True until the first snapshot, and from every refetch trigger until the next snapshot is applied. */
@@ -118,6 +118,11 @@ export class LiveBalances extends TypedEmitter<LiveBalancesEvents> {
       }),
       ws.on("close", () => this.#markStale()),
     );
+  }
+
+  /** @internal events held for the snapshot in flight (tests) */
+  get bufferedEvents(): number {
+    return this.#buffer.length;
   }
 
   /** A copy of one asset's balance, or null. */
@@ -260,10 +265,14 @@ export class LiveBalances extends TypedEmitter<LiveBalancesEvents> {
 
   #onEvent(d: BalanceUpdatedEvent["data"]): void {
     if (this.#closed || !d || typeof d.asset !== "string") return;
-    if (this.#fetching || this.#verifiedUser === null) {
+    // Buffered only while a snapshot is in flight (it is applied on top). Without a verified
+    // owner and no fetch (mismatch, retry backoff, signed out), events are dropped: the next
+    // snapshot is complete anyway.
+    if (this.#fetching) {
       this.#buffer.push(d);
       return;
     }
+    if (this.#verifiedUser === null) return;
     this.#apply(d, true);
   }
 

@@ -14,9 +14,10 @@ All notable changes to this project are documented here. The format follows
   `balance.updated` events. An event applies only when its `sequence` is greater than the stored
   one (a total of 0 removes the row, and an older snapshot row cannot bring it back); a refetch
   happens on a missed event, `balances.resync`, `CONCURRENT_MODIFICATION`, a reconnect or an
-  account change, at most every `minSnapshotIntervalMs` (default 2 s), with retry backoff. Before
-  every merge the REST key's account (`account.id()`) must be the WebSocket's user, otherwise
-  nothing is merged (`AccountMismatchError`, `ACCOUNT_MISMATCH`). Events without `sequence` (older
+  account change, at most every `minSnapshotIntervalMs` (default 2 s), with retry backoff. At
+  the start and after every account change the REST key's account (`account.id()`) must be the WebSocket's user, otherwise
+  nothing is merged (`AccountMismatchError`, `ACCOUNT_MISMATCH`). A custom `snapshot` source must name its owner (`ownerId` or `accountId`),
+  otherwise `liveBalances()` throws a `CONFIG` error. Events without `sequence` (older
   servers) always apply and log one warning. `stale`, `lastError`, `get()`, `all()`, `close()`;
   events `update`, `snapshot`, `error`.
 - WebSocket: frame-sequence tracking on private channels. A gap that is not filled within
@@ -28,8 +29,8 @@ All notable changes to this project are documented here. The format follows
 - WebSocket: the planned `signed_out` server frame is handled as a server sign-out: `expired` gives
   `authChanged` `token_expired`, `revoked` gives `session_revoked` plus `authLost` (synthetic
   `session.revoked` event with `data.reason: "signed_out"`), any other reason gives `signed_out`
-  with the raw reason in `code`. The token is forgotten; private channels come back after the next
-  successful `auth()`.
+  with the raw reason in `code` (`"unknown"` when the frame has none). The token is forgotten; private
+  channels come back after the next successful `auth()`.
 - `Balance.sequence` (a missing value decodes as 0), `BalanceUpdatedData`, `CexyWebSocket.userId`,
   `WsClock` / `clock` (test-only time source), `REAL_CLOCK`.
 
