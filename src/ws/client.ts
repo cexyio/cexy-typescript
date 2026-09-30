@@ -594,8 +594,10 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
       return;
     }
     const event = frame as unknown as WsEvent;
-    // Only this connection's own session signs it out; current false (or missing) changes nothing.
-    if (event.type === "session.revoked" && event.data?.current) this.#onAuthLost(event);
+    // Only this connection's own session signs it out (the server checks current == true
+    // exactly); current false, missing or not a boolean changes nothing.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- wire data may not match the type
+    if (event.type === "session.revoked" && event.data?.current === true) this.#onAuthLost(event);
     if (event.type === "orderbook.update") {
       const symbol = event.channel.startsWith("orderbook:") ? event.channel.slice("orderbook:".length) : event.data?.symbol;
       if (symbol) this.#books.get(symbol)?.onUpdate(event);
@@ -642,7 +644,13 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     const channels = [...this.#pendingPrivate];
     this.#pendingPrivate.clear();
     for (const c of channels) this.#channels.add(c);
-    this.#sendSubscribe(channels).catch((err: unknown) => this.#emitError(err));
+    this.#sendSubscribe(channels).catch((err: unknown) => {
+      // Refused by the server (e.g. signed out again meanwhile): back to pending, not held.
+      if (err instanceof CexyWebSocketError && err.fromServer) {
+        for (const c of channels) if (this.#channels.delete(c)) this.#pendingPrivate.add(c);
+      }
+      this.#emitError(err);
+    });
     this.emit("resync", "reauth");
   }
 

@@ -517,4 +517,33 @@ describe("private sign-outs (beyond the conformance script)", () => {
     await srv.until(() => srv!.conns[0]!.received.filter((x) => x.op === "subscribe").length === 2, "resubscribe");
     expect(srv.conns[0]!.received.filter((x) => x.op === "subscribe")[1].channels).toEqual(["orders"]);
   });
+
+  it("a re-subscribe refused by the server goes back to pending; current: \"true\" (a string) is not a sign-out", async () => {
+    srv = await startFakeServer({ ackSubscribe: false });
+    ws = new CexyWebSocket({ url: srv.url, allowInsecure: true, reconnect: false });
+    ws.on("error", () => {});
+    await ws.connect();
+    await ws.auth("session_access_token_placeholder");
+    const sub = ws.subscribe(["orders"]);
+    await srv.until(() => srv!.conns[0]!.received.some((x) => x.op === "subscribe"), "subscribe");
+    const s1 = srv.conns[0]!.received.find((x) => x.op === "subscribe");
+    srv.conns[0]!.send({ type: "subscribed", channels: ["orders"], id: s1.id });
+    await sub;
+    srv.conns[0]!.send({ ...frames.sessionRevoked, data: { ...frames.sessionRevoked.data, current: "true" } });
+    await ws.ping();
+    expect(ws.channels).toEqual(["orders"]);
+    expect(ws.hasToken).toBe(true);
+    srv.conns[0]!.send({ ...frames.sessionRevoked, data: { ...frames.sessionRevoked.data, current: true } });
+    await srv.until(() => ws!.channels.length === 0, "privates dropped");
+    await ws.auth("session_access_token_placeholder_2");
+    await srv.until(() => srv!.conns[0]!.received.filter((x) => x.op === "subscribe").length === 2, "re-subscribe");
+    const s2 = srv.conns[0]!.received.filter((x) => x.op === "subscribe")[1];
+    srv.conns[0]!.send({ type: "error", code: "UNAUTHENTICATED", message: "authentication required", id: s2.id });
+    await ws.ping();
+    expect(ws.channels).toEqual([]);
+    // Still pending: the next successful auth tries again.
+    await ws.auth("session_access_token_placeholder_3");
+    await srv.until(() => srv!.conns[0]!.received.filter((x) => x.op === "subscribe").length === 3, "second re-subscribe");
+    expect(srv.conns[0]!.received.filter((x) => x.op === "subscribe")[2].channels).toEqual(["orders"]);
+  });
 });
