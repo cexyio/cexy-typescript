@@ -547,3 +547,54 @@ describe("private sign-outs (beyond the conformance script)", () => {
     expect(srv.conns[0]!.received.filter((x) => x.op === "subscribe")[2].channels).toEqual(["orders"]);
   });
 });
+
+describe("LiveBalances with a server that sends no data.sequence", () => {
+  it("applies unsequenced events, keeps the stored sequence, and warns once", async () => {
+    srv = await startFakeServer();
+    const logger = quietLogger();
+    ws = new CexyWebSocket({ url: srv.url, allowInsecure: true, reconnect: false, logger });
+    await ws.connect();
+    await ws.auth("session_access_token_placeholder");
+    const snapshot = vi.fn(async () => [
+      { asset: "USDT", available: "100", locked: "0", pending: "0", total: "100", held_incoming: [], sequence: 40 },
+    ]);
+    const lb = await ws.liveBalances({ snapshot, accountId: "usr_test_1" });
+    await srv.until(() => !lb.stale, "first snapshot");
+    const push = (data: Record<string, unknown>) =>
+      srv!.conns[0]!.send({ type: "balance.updated", channel: "balances", data: { available: "0", locked: "0", pending: "0", ...data } });
+    push({ asset: "USDT", total: "90" });
+    push({ asset: "USDT", total: "80" });
+    await ws.ping();
+    expect(lb.get("USDT")).toMatchObject({ total: "80", sequence: 40 });
+    expect(logger.warn.mock.calls.filter((c) => String(c[0]).includes("without data.sequence")).length).toBe(1);
+    // A sequenced event takes over again.
+    push({ asset: "USDT", total: "70", sequence: 41 });
+    push({ asset: "USDT", total: "60", sequence: 41 });
+    await ws.ping();
+    expect(lb.get("USDT")).toMatchObject({ total: "70", sequence: 41 });
+    lb.close();
+  });
+});
+
+describe("liveBalances() from CexyClient.websocket()", () => {
+  it("uses account.id() and account.balances() by default, and refuses another account", async () => {
+    srv = await startFakeServer();
+    const rest = {
+      markets: { orderbook: vi.fn() },
+      account: {
+        balances: vi.fn(async () => [{ asset: "USDT", available: "1", locked: "0", pending: "0", total: "1", held_incoming: [], sequence: 3 }]),
+        id: vi.fn(async () => "someone_else"),
+      },
+    };
+    ws = new CexyWebSocket({ url: srv.url, allowInsecure: true, reconnect: false, restClient: rest });
+    await ws.connect();
+    await ws.auth("session_access_token_placeholder");
+    const lb = await ws.liveBalances();
+    await srv.until(() => lb.lastError !== null, "mismatch");
+    expect(lb.lastError?.code).toBe("ACCOUNT_MISMATCH");
+    expect(rest.account.id).toHaveBeenCalledTimes(1);
+    expect(rest.account.balances).not.toHaveBeenCalled();
+    expect(lb.all()).toEqual([]);
+    lb.close();
+  });
+});

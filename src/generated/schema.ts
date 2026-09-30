@@ -57,6 +57,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/account/id": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The id of the account the credential belongs to.
+         * @description The same id the realtime `authenticated` reply carries, so a client holding both an API key and a session can check they are one account before merging what each shows. For a sub-account's key, the sub-account's own id. Nothing else about the account: a key with read scope has no business with its owner's email address.
+         */
+        get: operations["get_account_id"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/account/ledger": {
         parameters: {
             query?: never;
@@ -709,6 +729,11 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description The id of the account a credential belongs to, and nothing else. */
+        AccountIdResponse: {
+            /** @description Account id: the same hex as the realtime `authenticated` reply's `user_id`. */
+            user_id: string;
+        };
         /**
          * @description Exact decimal amount, serialized as a string to avoid floating-point precision loss. Example: "1.50000000".
          * @example 1.50000000
@@ -860,6 +885,11 @@ export interface components {
             held_incoming: components["schemas"]["HeldIncomingResponse"][];
             locked: components["schemas"]["Amount"];
             pending: components["schemas"]["Amount"];
+            /**
+             * Format: int64
+             * @description This balance's sequence: it rises with every change to it, and `balance.updated` carries the same number as `data.sequence`. Apply an event only if its sequence is greater than the one this snapshot holds. 0 for a balance never touched.
+             */
+            sequence: number;
             total: components["schemas"]["Amount"];
         };
         /** @description Cancels every open order, optionally within one market. */
@@ -1807,6 +1837,46 @@ export interface operations {
             };
             /** @description No such asset */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_account_id: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The account id */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AccountIdResponse"];
+                    };
+                };
+            };
+            /** @description No credential, or one not valid */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An API key without `read` scope */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

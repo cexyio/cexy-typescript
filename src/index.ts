@@ -51,6 +51,7 @@ export {
   CexyWebSocket,
   CexyWebSocketError,
   DEFAULT_WS_URL,
+  REAL_CLOCK,
   type AuthChange,
   type AuthChangeReason,
   type AuthResult,
@@ -59,6 +60,8 @@ export {
   type CloseInfo,
   type ReconnectOptions,
   type ResyncReason,
+  type SequenceGap,
+  type WsClock,
   type SnapshotSource,
   type SubscribeResult,
   type WsLogger,
@@ -68,3 +71,10 @@ export { TypedEmitter, type EventMap, type Listener } from "./ws/emitter.js";
 export * from "./ws/types.js";
 export { USER_AGENT, VERSION } from "./version.js";
 export { isLocalHost } from "./url.js";
+export {
+  AccountMismatchError,
+  LiveBalances,
+  type LiveBalancesEvents,
+  type LiveBalancesOptions,
+  type LiveBalancesSnapshotReason,
+} from "./ws/balances.js";

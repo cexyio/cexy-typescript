@@ -15,6 +15,7 @@ export const INVOKE: Record<OperationId, (c: CexyClient) => Promise<unknown>> = 
   get_candles: (c) => c.markets.candles("BTC/USDT", { interval: "1h" }),
   list_pools: (c) => c.pools.list(),
   get_pool: (c) => c.pools.get("BTC/USDT"),
+  get_account_id: (c) => c.account.id(),
   list_balances: (c) => c.account.balances(),
   get_balance: (c) => c.account.balance("BTC"),
   get_ledger: (c) => c.account.ledger({ limit: 5 }),

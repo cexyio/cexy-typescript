@@ -167,11 +167,23 @@ export class PoolsResource extends Resource {
  * array: servers that predate the field decode as `[]`.
  */
 function withHeldIncoming(b: Balance): Balance {
-  if (!b || typeof b !== "object" || Array.isArray(b.held_incoming)) return b;
-  return { ...b, held_incoming: [] };
+  if (!b || typeof b !== "object") return b;
+  // Servers that predate `sequence` (live balances) omit it: 0 means "never touched".
+  const seq = typeof (b as Partial<Balance>).sequence === "number" ? b.sequence : 0;
+  if (Array.isArray(b.held_incoming) && seq === b.sequence) return b;
+  return { ...b, held_incoming: Array.isArray(b.held_incoming) ? b.held_incoming : [], sequence: seq };
 }
 
 export class AccountResource extends Resource {
+  /**
+   * The id of the account this API key belongs to (the same hex as the WebSocket's
+   * `authenticated` user id). `liveBalances()` uses it to check that REST snapshots and WebSocket
+   * events belong to the same account.
+   */
+  async id(opts?: RequestOptions): Promise<string> {
+    const r = await this.data<{ user_id: string }>({ op: "get_account_id" }, opts);
+    return r.user_id;
+  }
   /**
    * Balances per asset. `held_incoming` lists incoming internal transfers still held; their sum is
    * already included in `locked` (never add it again). Always an array (`[]` when none).

@@ -39,6 +39,7 @@ export const OPERATIONS = {
   list_pools: op("GET", "/api/v1/pools", "none", null, "pools.list"),
   get_pool: op("GET", "/api/v1/pools/{symbol}", "none", null, "pools.get"),
   // Account (read)
+  get_account_id: op("GET", "/api/v1/account/id", "api_key", "read", "account.id"),
   list_balances: op("GET", "/api/v1/account/balances", "api_key", "read", "account.balances"),
   get_balance: op("GET", "/api/v1/account/balances/{asset}", "api_key", "read", "account.balance"),
   get_ledger: op("GET", "/api/v1/account/ledger", "api_key", "read", "account.ledger"),

@@ -279,6 +279,39 @@ re-subscribes those channels itself: at once for another user, after the next su
 ws.on("authChanged", ({ reason, dropped }) => console.warn(`private channels ended (${reason}):`, dropped));
 ```
 
+The server can also sign a connection out by itself: `signed_out` (a planned server frame; this
+SDK already handles it). Reason `expired` becomes `authChanged` `token_expired`, reason `revoked`
+becomes `session_revoked` plus `authLost`, and any other reason becomes `signed_out` with the raw
+value in `code`. Re-send `auth()` with the fresh token on every token refresh; that keeps the
+private subscriptions.
+
+**Missed private events.** Every private frame carries a per-connection `sequence`. When numbers
+are skipped (after a short reorder window, `reorderWindowMs`, default 250 ms), the client emits
+`sequenceGap` and `resync` `"sequence_gap"`: refetch that channel's state over REST.
+`balances.resync`, `deposits.resync` and `withdrawals.resync` (the last two planned) emit `resync`
+with `"balances_resync"`, `"deposits_resync"` or `"withdrawals_resync"`.
+
+### Live balances
+
+```ts
+const cexy = new CexyClient({ apiKey, apiSecret });
+const ws = cexy.websocket();
+await ws.connect();
+await ws.auth(sessionToken);
+const balances = await ws.liveBalances();
+balances.on("update", (asset, b) => console.log(asset, b?.total ?? "0"));
+console.log(balances.get("USDT")?.total, balances.stale, balances.lastError);
+```
+
+`liveBalances()` subscribes `balances`, takes a REST snapshot and applies newer `balance.updated`
+events (only when their `sequence` is greater than the one it holds; a total of 0 removes the row).
+It refetches by itself on a missed event, `balances.resync`, `CONCURRENT_MODIFICATION`, a reconnect
+or an account change, at most every `minSnapshotIntervalMs` (default 2000 ms), and never because a
+balance's own sequence skipped values. Before every merge it checks that the REST key's account
+(`account.id()`) is the WebSocket's authenticated user: otherwise nothing is merged and
+`lastError.code` is `ACCOUNT_MISMATCH`. `stale` is true while a refetch is pending.
+
+
 In Node the client uses the optional `ws` package when installed (so it can send the SDK User-Agent),
 otherwise the global `WebSocket` (Node, browsers).
 
