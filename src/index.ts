@@ -51,6 +51,8 @@ export {
   CexyWebSocket,
   CexyWebSocketError,
   DEFAULT_WS_URL,
+  type AuthChange,
+  type AuthChangeReason,
   type AuthResult,
   type CexyWebSocketEvents,
   type CexyWebSocketOptions,

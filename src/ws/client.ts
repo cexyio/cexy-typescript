@@ -101,7 +101,30 @@ export interface CloseInfo {
   willReconnect: boolean;
 }
 
-export type ResyncReason = "concurrent_modification" | "reconnect";
+/**
+ * `reauth`: private channels were re-subscribed after the server signed the connection out
+ * or switched it to another account; refetch private state through REST.
+ */
+export type ResyncReason = "concurrent_modification" | "reconnect" | "reauth";
+
+/** Why the server stopped the connection's private subscriptions (see `authChanged`). */
+export type AuthChangeReason = "user_changed" | "auth_failed" | "session_revoked";
+
+/** Payload of `authChanged`. */
+export interface AuthChange {
+  reason: AuthChangeReason;
+  /** The user of the last successful auth on this connection, if any. */
+  previousUserId: string | null;
+  /** The new user (`user_changed`), otherwise null: the connection is signed out. */
+  userId: string | null;
+  /** The server's error code (`auth_failed` only). */
+  code?: string;
+  /**
+   * Private channels the server dropped. They are re-subscribed automatically: at once for
+   * `user_changed`, after the next successful `auth()` otherwise (then `resync` "reauth").
+   */
+  dropped: string[];
+}
 
 export interface CexyWebSocketEvents extends Record<string, unknown[]> {
   open: [];
@@ -129,6 +152,12 @@ export interface CexyWebSocketEvents extends Record<string, unknown[]> {
    * channels keep working. Call `auth()` with a new token to restore private channels.
    */
   authLost: [SessionRevokedEvent];
+  /**
+   * The server ended this connection's private subscriptions: `auth()` succeeded as another
+   * user, an `auth()` failed (the server signs the connection out on any auth error), or this
+   * connection's own session was revoked (`session.revoked` with `current: true`).
+   */
+  authChanged: [AuthChange];
 }
 
 /** Result of `auth()`. */
@@ -182,6 +211,10 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   #welcome: WelcomeFrame | null = null;
   #channels = new Set<string>();
   #token: string | null = null;
+  /** The user of the last successful auth on the current connection. */
+  #authUserId: string | null = null;
+  /** Private channels dropped by a server sign-out, re-subscribed after the next successful auth. */
+  #pendingPrivate = new Set<string>();
   #closedByUser = true;
   #everConnected = false;
   #reconnectAttempt = 0;
@@ -248,6 +281,14 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     return [...this.#channels];
   }
 
+  /**
+   * True while a session token is kept for automatic re-authentication. A refused token and a
+   * revoked session are forgotten.
+   */
+  get hasToken(): boolean {
+    return this.#token !== null;
+  }
+
   /** Opens the connection; resolves on the server's `welcome` frame. */
   connect(): Promise<WelcomeFrame> {
     if (this.connected && this.#welcome) return Promise.resolve(this.#welcome);
@@ -294,16 +335,25 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
         throw new CexyWebSocketError("CONFIG", `invalid channel name: ${JSON.stringify(c)}`);
       }
     }
-    const alreadySubscribed = wanted.filter((c) => this.#channels.has(c));
-    const fresh = wanted.filter((c) => !this.#channels.has(c));
-    const room = Math.max(0, this.#opts.maxSubscriptions - this.#channels.size);
+    // Private channels waiting for the next successful auth count as held.
+    const held = (c: string) => this.#channels.has(c) || this.#pendingPrivate.has(c);
+    const alreadySubscribed = wanted.filter(held);
+    const fresh = wanted.filter((c) => !held(c));
+    const room = Math.max(0, this.#opts.maxSubscriptions - this.#channels.size - this.#pendingPrivate.size);
     const accepted = fresh.slice(0, room);
     const refused = fresh.slice(room);
     if (refused.length) this.#logger.warn(`subscription cap (${this.#opts.maxSubscriptions}) reached; refused: ${refused.join(", ")}`);
     if (accepted.length === 0) return { added: [], refused, alreadySubscribed };
     for (const c of accepted) this.#channels.add(c);
     if (!this.connected) return { added: [], refused, alreadySubscribed };
-    const added = await this.#sendSubscribe(accepted);
+    let added: string[];
+    try {
+      added = await this.#sendSubscribe(accepted);
+    } catch (err) {
+      // Refused by the server (e.g. UNAUTHENTICATED for a private channel): not held.
+      if (err instanceof CexyWebSocketError && err.fromServer) for (const c of accepted) this.#channels.delete(c);
+      throw err;
+    }
     return { added, refused, alreadySubscribed };
   }
 
@@ -312,6 +362,7 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
    * without one); rejects on an `error` with the request id.
    */
   async unsubscribe(channels: string[]): Promise<void> {
+    for (const c of channels) this.#pendingPrivate.delete(c);
     const held = [...new Set(channels)].filter((c) => this.#channels.delete(c));
     if (held.length && this.connected) await this.#request("unsubscribe", { channels: held }, held, false);
   }
@@ -345,6 +396,7 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   /** Closes the connection for good (no reconnect). */
   close(): void {
     this.#closedByUser = true;
+    this.#authUserId = null;
     if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = null;
     for (const b of [...this.#books.values()]) b.markDisconnected();
@@ -444,6 +496,7 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
         `server protocol_version ${welcome.protocol_version} is newer than this SDK supports (${SUPPORTED_PROTOCOL_VERSION}); continuing`,
       );
     }
+    this.#authUserId = null; // a new connection starts signed out
     const isReconnect = this.#everConnected;
     this.#everConnected = true;
     this.#reconnectAttempt = 0;
@@ -483,7 +536,9 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
       case "authenticated": {
         const id = typeof frame["id"] === "string" ? frame["id"] : null;
         if (id !== null) this.#settle(id, "auth", frame);
-        this.emit("authenticated", typeof frame["user_id"] === "string" ? frame["user_id"] : null);
+        const userId = typeof frame["user_id"] === "string" ? frame["user_id"] : null;
+        this.emit("authenticated", userId);
+        this.#onAuthenticated(userId);
         return;
       }
       case "subscribed":
@@ -518,6 +573,9 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
             this.#pending.delete(id);
             clearTimeout(pending.timer);
             pending.reject(err);
+            // Any error on an auth frame signs the connection out (an UNAUTHENTICATED error
+            // on a subscribe is only a refused subscribe).
+            if (pending.kind === "auth") this.#signedOut("auth_failed", f.code);
           }
         }
         this.emit("serverError", err, f);
@@ -536,7 +594,8 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
       return;
     }
     const event = frame as unknown as WsEvent;
-    if (event.type === "session.revoked") this.#onAuthLost(event);
+    // Only this connection's own session signs it out; current false (or missing) changes nothing.
+    if (event.type === "session.revoked" && event.data?.current) this.#onAuthLost(event);
     if (event.type === "orderbook.update") {
       const symbol = event.channel.startsWith("orderbook:") ? event.channel.slice("orderbook:".length) : event.data?.symbol;
       if (symbol) this.#books.get(symbol)?.onUpdate(event);
@@ -544,10 +603,47 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     this.emit("event", event);
   }
 
+  /** This connection's own session was revoked: the server has signed it out. */
   #onAuthLost(event: SessionRevokedEvent): void {
     this.#token = null;
-    for (const c of [...this.#channels]) if (PRIVATE_CHANNELS.has(c)) this.#channels.delete(c);
+    this.#signedOut("session_revoked");
     this.emit("authLost", event);
+  }
+
+  /** Moves the held private channels to the pending set; returns them. */
+  #dropPrivate(): string[] {
+    const dropped = [...this.#channels].filter((c) => PRIVATE_CHANNELS.has(c));
+    for (const c of dropped) {
+      this.#channels.delete(c);
+      this.#pendingPrivate.add(c);
+    }
+    return dropped;
+  }
+
+  /** The server signed the connection out and dropped every private subscription. */
+  #signedOut(reason: "auth_failed" | "session_revoked", code?: string): void {
+    const previousUserId = this.#authUserId;
+    this.#authUserId = null;
+    const dropped = this.#dropPrivate();
+    const change: AuthChange = { reason, previousUserId, userId: null, dropped };
+    if (code !== undefined) change.code = code;
+    this.emit("authChanged", change);
+  }
+
+  /** A successful auth: detect an account switch, then restore pending private channels. */
+  #onAuthenticated(userId: string | null): void {
+    const previousUserId = this.#authUserId;
+    this.#authUserId = userId;
+    if (previousUserId !== null && userId !== previousUserId) {
+      const dropped = this.#dropPrivate();
+      this.emit("authChanged", { reason: "user_changed", previousUserId, userId, dropped });
+    }
+    if (this.#pendingPrivate.size === 0) return;
+    const channels = [...this.#pendingPrivate];
+    this.#pendingPrivate.clear();
+    for (const c of channels) this.#channels.add(c);
+    this.#sendSubscribe(channels).catch((err: unknown) => this.#emitError(err));
+    this.emit("resync", "reauth");
   }
 
   /** Resolves the pending request `id` if the acknowledgement type matches its kind. */

@@ -6,6 +6,30 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-dev.8] (2026-09-30)
+
+### Fixed
+- WebSocket: private channels no longer go silent after a server-side sign-out. The server ends
+  every private subscription (without a frame) when `auth()` succeeds as another user, when an
+  `auth()` fails, or when this connection's own session is revoked. The client used to keep
+  those channels as held, so `subscribe()` for them sent nothing. It now drops them, emits the
+  new `authChanged` event (`reason`, `previousUserId`, `userId`, `code`, `dropped`) and
+  re-subscribes them: at once after a switch to another user, after the next successful
+  `auth()` otherwise, followed by `resync` with the new reason `"reauth"`. Re-authenticating
+  as the same user changes nothing.
+- WebSocket: a `subscribe()` refused by the server (e.g. `UNAUTHENTICATED` for a private
+  channel) no longer leaves the channels in `channels`.
+
+### Changed
+- WebSocket: `session.revoked` with `current: false` (another session of the same account was
+  revoked) no longer emits `authLost`, drops private channels or forgets the token; the server
+  keeps this connection signed in. Only `current: true` does. **Behaviour change.**
+
+### Added
+- `CexyWebSocket.hasToken`: whether a session token is kept for automatic re-authentication.
+- Types `AuthChange`, `AuthChangeReason`; `ResyncReason` gains `"reauth"`.
+- Conformance: runs `cexy-api-spec/conformance/ws/private_signout.json` against a scripted server.
+
 ## [0.1.0-dev.7] (2026-09-29)
 
 ### Added

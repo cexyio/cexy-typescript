@@ -462,3 +462,59 @@ describe("request acknowledgements (id correlation)", () => {
     expect(await p).toBeGreaterThanOrEqual(0);
   });
 });
+
+describe("private sign-outs (beyond the conformance script)", () => {
+  it("after a reconnect, private channels dropped by a failed re-auth come back on the next auth()", async () => {
+    srv = await startFakeServer({ auth: "silent" });
+    ws = new CexyWebSocket({ url: srv.url, allowInsecure: true, reconnect: { baseDelayMs: 1, maxDelayMs: 2 } });
+    await ws.connect();
+    const authOk = async (conn: number, token: string) => {
+      const p = ws!.auth(token);
+      await srv!.until(() => srv!.conns[conn]!.received.some((x) => x.op === "auth" && x.token === token), "auth frame");
+      const req = srv!.conns[conn]!.received.find((x) => x.op === "auth" && x.token === token);
+      srv!.conns[conn]!.send({ type: "authenticated", user_id: "usr_test_1", id: req.id });
+      return p;
+    };
+    await authOk(0, "session_access_token_placeholder");
+    await ws.subscribe(["orders", "ticker:BTC/USDT"]);
+    const changes: unknown[] = [];
+    ws.on("authChanged", (c) => changes.push(c));
+    const failing = ws.auth("expired_token_placeholder");
+    await srv.until(() => srv!.conns[0]!.received.some((x) => x.token === "expired_token_placeholder"), "failing auth frame");
+    const failingReq = srv.conns[0]!.received.find((x) => x.token === "expired_token_placeholder");
+    srv.conns[0]!.send({ type: "error", code: "TOKEN_EXPIRED", message: "expired", id: failingReq.id });
+    await expect(failing).rejects.toMatchObject({ code: "TOKEN_EXPIRED" });
+    expect(ws.channels).toEqual(["ticker:BTC/USDT"]);
+    expect(changes).toEqual([{ reason: "auth_failed", previousUserId: "usr_test_1", userId: null, code: "TOKEN_EXPIRED", dropped: ["orders"] }]);
+    // A private subscribe while signed out is not re-sent: the channel is already pending.
+    expect((await ws.subscribe(["orders"])).alreadySubscribed).toEqual(["orders"]);
+
+    srv.conns[0]!.socket.terminate();
+    await srv.until(() => srv!.conns.length === 2 && ws!.connected, "reconnect");
+    await srv.until(() => srv!.conns[1]!.received.some((x) => x.op === "subscribe"), "public resubscribe");
+    expect(srv.conns[1]!.received.some((x) => x.op === "auth")).toBe(false);
+    expect(srv.conns[1]!.received.filter((x) => x.op === "subscribe").map((x) => x.channels)).toEqual([["ticker:BTC/USDT"]]);
+
+    const resyncs: string[] = [];
+    ws.on("resync", (r) => resyncs.push(r));
+    await authOk(1, "session_access_token_placeholder_2");
+    await srv.until(() => srv!.conns[1]!.received.filter((x) => x.op === "subscribe").length === 2, "private resubscribe");
+    expect(srv.conns[1]!.received.filter((x) => x.op === "subscribe")[1].channels).toEqual(["orders"]);
+    expect(resyncs).toEqual(["reauth"]);
+    expect(ws.channels.sort()).toEqual(["orders", "ticker:BTC/USDT"]);
+  });
+
+  it("unsubscribe() while signed out forgets a pending private channel", async () => {
+    srv = await startFakeServer();
+    ws = new CexyWebSocket({ url: srv.url, allowInsecure: true, reconnect: false });
+    await ws.connect();
+    await ws.auth("session_access_token_placeholder");
+    await ws.subscribe(["orders", "balances"]);
+    srv.conns[0]!.send({ ...frames.sessionRevoked, data: { ...frames.sessionRevoked.data, current: true } });
+    await srv.until(() => ws!.channels.length === 0, "privates dropped");
+    await ws.unsubscribe(["balances"]);
+    await ws.auth("session_access_token_placeholder_2");
+    await srv.until(() => srv!.conns[0]!.received.filter((x) => x.op === "subscribe").length === 2, "resubscribe");
+    expect(srv.conns[0]!.received.filter((x) => x.op === "subscribe")[1].channels).toEqual(["orders"]);
+  });
+});
