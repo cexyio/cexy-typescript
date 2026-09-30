@@ -124,6 +124,11 @@ export interface CexyWebSocketOptions {
   reorderWindowMs?: number;
   /** TEST-ONLY: see `WsClock`. */
   clock?: WsClock;
+  /**
+   * Signs `authKey()` challenges (PLANNED API-key authentication). `CexyClient.websocket()` sets it
+   * when the client uses `auth: "hmac"`.
+   */
+  keySigner?: WsKeySigner;
   /** @internal deterministic jitter in tests */
   random?: () => number;
 }
@@ -164,7 +169,16 @@ export type ResyncReason =
  * Why the server stopped the connection's private subscriptions (see `authChanged`). May grow:
  * `signed_out` covers a server sign-out with a reason this SDK does not know (raw value in `code`).
  */
-export type AuthChangeReason = "user_changed" | "auth_failed" | "session_revoked" | "token_expired" | "signed_out";
+export type AuthChangeReason =
+  | "user_changed"
+  | "auth_failed"
+  | "session_revoked"
+  | "token_expired"
+  /** The API key was revoked or deleted (planned key authentication). */
+  | "key_revoked"
+  /** The API key expired (planned key authentication). */
+  | "key_expired"
+  | "signed_out";
 
 /** Payload of `authChanged`. */
 export interface AuthChange {
@@ -225,16 +239,24 @@ export interface CexyWebSocketEvents extends Record<string, unknown[]> {
 }
 
 /** Result of `auth()`. */
+/** Signs a WebSocket `auth_key` challenge (an `HmacAuthenticator` fits). */
+export interface WsKeySigner {
+  signWebSocketChallenge(connectionId: string, challenge: string): Promise<{ keyId: string; signature: string }>;
+}
+
 export interface AuthResult {
   /** From the `authenticated` acknowledgement; null when queued. */
   userId: string | null;
+  /** How the connection is authenticated (`"api_key"` or `"session"`), when the server says. */
+  auth?: string;
   /** True when not connected: the token is kept and sent (and acknowledged) on connect. */
   queued: boolean;
 }
 
-type RequestKind = "auth" | "subscribe" | "unsubscribe" | "ping";
+type RequestKind = "auth" | "auth_key" | "subscribe" | "unsubscribe" | "ping";
 const ACK_TYPE: Record<RequestKind, string> = {
   auth: "authenticated",
+  auth_key: "authenticated",
   subscribe: "subscribed",
   unsubscribe: "unsubscribed",
   ping: "pong",
@@ -283,6 +305,11 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   #seq = new Map<string, SeqState>();
   readonly #clock: WsClock;
   readonly #reorderWindowMs: number;
+  readonly #keySigner: WsKeySigner | undefined;
+  /** The latest unused `auth_key` challenge (from `welcome` or the last auth_key reply). */
+  #challenge: string | null = null;
+  /** `authKey()` is the active credential (re-sent with each new challenge after reconnects). */
+  #keyAuth = false;
   #closedByUser = true;
   #everConnected = false;
   #reconnectAttempt = 0;
@@ -338,6 +365,7 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     this.#ctorOption = options.WebSocket;
     this.#clock = options.clock ?? REAL_CLOCK;
     this.#reorderWindowMs = options.reorderWindowMs ?? 250;
+    this.#keySigner = options.keySigner;
   }
 
   /** The last `welcome` frame, or null before the first connection. */
@@ -399,9 +427,27 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   auth(token: string): Promise<AuthResult> {
     if (typeof token !== "string" || token === "") throw new CexyWebSocketError("CONFIG", "auth(): token is required");
     this.#token = token;
+    this.#keyAuth = false;
     if (!this.connected) return Promise.resolve({ userId: null, queued: true });
     const p = this.#auth(token);
     p.catch(() => {}); // callers that ignore the promise must not crash the process
+    return p;
+  }
+
+  /**
+   * Authenticates with the client's API key (PLANNED: the server does not accept it yet). Signs the
+   * server's single-use challenge; the secret never leaves the process. After a reconnect it signs
+   * the new connection's challenge automatically. A refused `auth_key` stops the automatic re-auth
+   * (the server closes the socket after 5 failures). Needs `keySigner` (`CexyClient.websocket()`
+   * with `auth: "hmac"`).
+   */
+  authKey(): Promise<AuthResult> {
+    if (!this.#keySigner) throw new CexyWebSocketError("CONFIG", 'authKey() needs a client created with auth: "hmac"');
+    this.#token = null;
+    this.#keyAuth = true;
+    if (!this.connected) return Promise.resolve({ userId: null, queued: true });
+    const p = this.#authKey();
+    p.catch(() => {});
     return p;
   }
 
@@ -634,12 +680,13 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     }
     this.#authUserId = null; // a new connection starts signed out
     this.#resetSeq(); // sequences on a new connection are unrelated
+    this.#challenge = typeof welcome.challenge === "string" ? welcome.challenge : null;
     const isReconnect = this.#everConnected;
     this.#everConnected = true;
     this.#reconnectAttempt = 0;
     this.emit("welcome", welcome);
     if (isReconnect) {
-      if (this.#token) this.#reAuth(this.#token);
+      this.#reAuthActive();
       const channels = [...this.#channels];
       if (channels.length) {
         this.#sendSubscribe(channels).catch((err: unknown) => this.#emitError(err));
@@ -649,10 +696,10 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
       for (const b of this.#books.values()) void b.resync();
     } else if (this.#channels.size) {
       // Channels queued before the first connection.
-      if (this.#token) this.#reAuth(this.#token);
+      this.#reAuthActive();
       this.#sendSubscribe([...this.#channels]).catch((err: unknown) => this.#emitError(err));
-    } else if (this.#token) {
-      this.#reAuth(this.#token);
+    } else {
+      this.#reAuthActive();
     }
     return welcome;
   }
@@ -672,7 +719,9 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
       }
       case "authenticated": {
         const id = typeof frame["id"] === "string" ? frame["id"] : null;
-        if (id !== null) this.#settle(id, "auth", frame);
+        // Every auth_key reply carries the next challenge: store it before anything else.
+        if (typeof frame["challenge"] === "string") this.#challenge = frame["challenge"];
+        if (id !== null) this.#settle(id, this.#pending.get(id)?.kind === "auth_key" ? "auth_key" : "auth", frame);
         const userId = typeof frame["user_id"] === "string" ? frame["user_id"] : null;
         this.emit("authenticated", userId);
         this.#onAuthenticated(userId);
@@ -717,7 +766,12 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
         } else if (raw === "expired") {
           this.#signedOut("token_expired");
         } else {
-          this.#signedOut("signed_out", raw);
+          if (raw === "key_revoked" || raw === "key_expired") {
+            this.#keyAuth = false;
+            this.#signedOut(raw);
+          } else {
+            this.#signedOut("signed_out", raw);
+          }
         }
         return;
       }
@@ -727,6 +781,7 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
         const f: ErrorFrame = { type: "error", code, message, id: typeof frame["id"] === "string" ? frame["id"] : null };
         const err = new CexyWebSocketError(code, message, true);
         const id = f.id ?? null;
+        if (typeof frame["challenge"] === "string") this.#challenge = frame["challenge"];
         if (id !== null) {
           const pending = this.#pending.get(id);
           if (pending) {
@@ -735,7 +790,9 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
             pending.reject(err);
             // Any error on an auth frame signs the connection out (an UNAUTHENTICATED error
             // on a subscribe is only a refused subscribe).
-            if (pending.kind === "auth") this.#signedOut("auth_failed", f.code);
+            if (pending.kind === "auth" || pending.kind === "auth_key") this.#signedOut("auth_failed", f.code);
+            // A refused key is not tried again automatically (5 failures close the socket).
+            if (pending.kind === "auth_key") this.#keyAuth = false;
           }
         }
         this.emit("serverError", err, f);
@@ -903,6 +960,8 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     try {
       const ack = await this.#request("auth", { token }, [], true);
       const userId = ack && typeof ack["user_id"] === "string" ? ack["user_id"] : null;
+      const auth = ack && typeof ack["auth"] === "string" ? ack["auth"] : undefined;
+      if (auth !== undefined) return { userId, queued: false, auth };
       return { userId, queued: false };
     } catch (err) {
       // The server refused this token: do not send it again on reconnect.
@@ -916,6 +975,27 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   /** Automatic (re-)authentication; failures surface as `error` events. */
   #reAuth(token: string): void {
     this.#auth(token).catch((err: unknown) => this.#emitError(err));
+  }
+
+  /** Re-authenticates with the active credential (session token or API key), if any. */
+  #reAuthActive(): void {
+    if (this.#token) this.#reAuth(this.#token);
+    else if (this.#keyAuth) this.#authKey().catch((err: unknown) => this.#emitError(err));
+  }
+
+  async #authKey(): Promise<AuthResult> {
+    const signer = this.#keySigner;
+    const challenge = this.#challenge;
+    const connectionId = this.#welcome?.connection_id;
+    if (!signer || !challenge || !connectionId) {
+      throw new CexyWebSocketError("NO_CHALLENGE", "authKey(): the server has not issued a challenge on this connection");
+    }
+    this.#challenge = null; // a challenge is signed at most once
+    const { keyId, signature } = await signer.signWebSocketChallenge(connectionId, challenge);
+    const ack = await this.#request("auth_key", { key_id: keyId, signature }, [], true);
+    const userId = ack && typeof ack["user_id"] === "string" ? ack["user_id"] : null;
+    const auth = ack && typeof ack["auth"] === "string" ? ack["auth"] : undefined;
+    return auth === undefined ? { userId, queued: false } : { userId, queued: false, auth };
   }
 
   async #sendSubscribe(channels: string[]): Promise<string[]> {

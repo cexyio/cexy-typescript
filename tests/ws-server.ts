@@ -23,7 +23,8 @@ export interface Conn {
 }
 
 export interface FakeServerOptions {
-  welcome?: Record<string, unknown> | false;
+  /** Extra welcome fields (or a function of the connection index), or false for no welcome. */
+  welcome?: Record<string, unknown> | false | ((n: number) => Record<string, unknown>);
   /** Reply `subscribed` to subscribe frames (default true). */
   ackSubscribe?: boolean;
   /** Reply `pong` with id to pings (default true). */
@@ -62,7 +63,10 @@ export async function startFakeServer(opts: FakeServerOptions = {}) {
       }
       waiters.splice(0).forEach((w) => w());
     });
-    if (opts.welcome !== false) conn.send({ ...frames.welcome, ...(opts.welcome ?? {}) });
+    if (opts.welcome !== false) {
+      const extra = typeof opts.welcome === "function" ? opts.welcome(conns.length - 1) : (opts.welcome ?? {});
+      conn.send({ ...frames.welcome, ...extra });
+    }
     waiters.splice(0).forEach((w) => w());
   });
 

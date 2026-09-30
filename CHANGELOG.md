@@ -6,6 +6,26 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Request signing, **planned** (the API does not accept it yet; the default is unchanged):
+  `new CexyClient({ apiKey, apiSecret, auth: "hmac" })` signs every private request
+  (`CEXY-HMAC-SHA256-v1`: `X-API-Key`, `X-API-Timestamp`, `X-API-Nonce`, `X-API-Signature`) instead
+  of sending `X-API-Secret`. Every attempt, retries included, is signed with a fresh timestamp and
+  nonce. After `SIGNATURE_EXPIRED` the client adopts the server clock (at most 1 h away) and resends
+  once. `KEY_NOT_SIGNABLE` (a key issued before signing) is an error that names the fix; there is
+  no fallback to `X-API-Secret`. Checked against the spec's signing vectors and a test server
+  that verifies every signature from the raw request it received.
+- WebSocket `authKey()`, **planned**: authenticates with the client's API key by signing the
+  server's single-use challenge. It re-signs the new challenge after each reconnect, stops
+  automatic key re-auth after a refused key, and reports `key_revoked` / `key_expired` sign-outs.
+  `CexyClient.websocket()` passes the signer when the client uses `auth: "hmac"`. `AuthResult.auth`
+  says how the connection is authenticated.
+
+### Changed
+- Query strings are built with RFC 3986 encoding (`%20` for a space, `%2B` for a plus) instead of
+  `URLSearchParams` (`+` for a space), and path values also encode `!'()*`. The server decodes both
+  forms the same way; this makes the signed request exactly the sent one.
+
 ### Fixed
 - `LiveBalances`: events that arrived while the owner lookup was in flight are dropped when the
   lookup ends in `ACCOUNT_MISMATCH` (they were kept until the next snapshot).

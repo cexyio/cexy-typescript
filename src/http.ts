@@ -1,4 +1,5 @@
 import type { Authenticator } from "./auth.js";
+import { HmacAuthenticator, encodeComponent } from "./signing.js";
 import {
   CexyApiError,
   CLIENT_ERROR_CODES,
@@ -152,8 +153,43 @@ export class Transport {
     return Math.ceil(this.config.random() * cap);
   }
 
-  /** One attempt: rate limiter, credentials, timeout, error mapping. No retries. */
+  /**
+   * One attempt: rate limiter, credentials, timeout, error mapping. No retries, except ONE
+   * re-signed resend after `SIGNATURE_EXPIRED` once the client clock has been corrected.
+   */
   async attempt(spec: CallSpec, opts: RequestOptions = {}): Promise<RawResponse> {
+    try {
+      return await this.#attemptOnce(spec, opts);
+    } catch (err) {
+      if (!(err instanceof CexyApiError)) throw err;
+      const auth = this.config.authenticator;
+      if (err.code === "KEY_NOT_SIGNABLE") {
+        throw new CexyApiError({
+          status: err.status,
+          code: err.code,
+          message: "create a new API key; keys issued before request signing can't sign",
+          details: err.details,
+          requestId: err.requestId,
+          retryable: false,
+        });
+      }
+      if (err.code !== "SIGNATURE_EXPIRED" || !(auth instanceof HmacAuthenticator)) throw err;
+      const serverMs = Number(err.details["server_time_ms"]);
+      if (!Number.isFinite(serverMs) || !auth.adjustClock(serverMs)) {
+        throw new CexyApiError({
+          status: err.status,
+          code: err.code,
+          message: "the local clock is more than 1 hour away from the server's: fix the system clock",
+          details: err.details,
+          requestId: err.requestId,
+          retryable: false,
+        });
+      }
+      return await this.#attemptOnce(spec, opts); // re-signed with the corrected clock, once
+    }
+  }
+
+  async #attemptOnce(spec: CallSpec, opts: RequestOptions = {}): Promise<RawResponse> {
     const info = OPERATIONS[spec.op];
     const url = this.buildUrl(info, spec.pathParams, spec.query);
     const headers = new Headers({ Accept: spec.responseType === "text" ? "text/csv, application/json" : "application/json" });
@@ -248,15 +284,21 @@ export class Transport {
       // "." and ".." would be dot segments: the URL layer resolves them (even as %2E), so the
       // request would silently go to a different route.
       if (v === "." || v === "..") throw new CexyConfigError(`${info.sdkMethod}(): ${name} must not be "." or ".."`);
-      return encodeURIComponent(v);
+      return encodeComponent(v);
     });
     const url = new URL(this.config.baseUrl.replace(/\/+$/, "") + path);
+    // Built here (RFC 3986: %20 for a space, %2B for a plus), not with URLSearchParams (which
+    // writes "+" for a space), so the query that is signed is exactly the query that is sent.
+    const parts: string[] = [];
     for (const [k, v] of Object.entries(query ?? {})) {
       if (v === undefined || v === null) continue;
-      if (v instanceof Date) url.searchParams.set(k, v.toISOString());
-      else if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") url.searchParams.set(k, String(v));
+      let s: string;
+      if (v instanceof Date) s = v.toISOString();
+      else if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") s = String(v);
       else throw new CexyConfigError(`${info.sdkMethod}(): query parameter ${k} must be a string, number, boolean or Date`);
+      parts.push(`${encodeComponent(k)}=${encodeComponent(s)}`);
     }
+    url.search = parts.length ? `?${parts.join("&")}` : "";
     return url;
   }
 

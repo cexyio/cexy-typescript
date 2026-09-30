@@ -291,6 +291,20 @@ are skipped (after a short reorder window, `reorderWindowMs`, default 250 ms), t
 `balances.resync`, `deposits.resync` and `withdrawals.resync` (the last two planned) emit `resync`
 with `"balances_resync"`, `"deposits_resync"` or `"withdrawals_resync"`.
 
+### Request signing (planned)
+
+The API will accept signed requests instead of the secret header. The SDK is ready; keep the default
+until the API announces it:
+
+```ts
+const cexy = new CexyClient({ apiKey, apiSecret, auth: "hmac" }); // default: auth: "headers"
+```
+
+With `auth: "hmac"` the secret never leaves your process: every private request is signed
+(`X-API-Key`, `X-API-Timestamp`, `X-API-Nonce`, `X-API-Signature`), every retry with a fresh
+timestamp and nonce. A key issued before signing existed fails with `KEY_NOT_SIGNABLE`: create a new
+API key. `cexy.websocket().authKey()` authenticates a WebSocket with the same key.
+
 ### Live balances
 
 ```ts

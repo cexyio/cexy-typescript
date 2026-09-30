@@ -1,4 +1,5 @@
 import { ApiKeyAuthenticator, type Authenticator } from "./auth.js";
+import { HmacAuthenticator } from "./signing.js";
 import { CexyConfigError } from "./errors.js";
 import { assertSecureUrl } from "./url.js";
 import { Transport, type FetchLike, type RequestOptions, type RetryInfo } from "./http.js";
@@ -29,6 +30,12 @@ export interface CexyClientOptions {
   apiKey?: string;
   /** API key secret. Never logged, never put in a URL. */
   apiSecret?: string;
+  /**
+   * How `apiKey`/`apiSecret` authenticate. `"headers"` (default): `X-API-Key` + `X-API-Secret`.
+   * `"hmac"`: request signing (PLANNED: the API does not accept it yet). The secret never leaves
+   * the process; a key issued before signing existed fails with `KEY_NOT_SIGNABLE` (no fallback).
+   */
+  auth?: "headers" | "hmac";
   /**
    * Custom credentials scheme (for example HMAC signing once the API supports it).
    * Mutually exclusive with `apiKey`/`apiSecret`.
@@ -107,7 +114,15 @@ export class CexyClient {
     if (hasKey && options.authenticator) {
       throw new CexyConfigError("pass either apiKey/apiSecret or authenticator, not both");
     }
-    const authenticator = options.authenticator ?? (hasKey ? new ApiKeyAuthenticator(apiKey, apiSecret as string) : null);
+    const mode = options.auth ?? "headers";
+    if (mode !== "headers" && mode !== "hmac") throw new CexyConfigError('auth must be "headers" or "hmac"');
+    const authenticator =
+      options.authenticator ??
+      (hasKey
+        ? mode === "hmac"
+          ? new HmacAuthenticator(apiKey, apiSecret as string)
+          : new ApiKeyAuthenticator(apiKey, apiSecret as string)
+        : null);
 
     const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     let parsed: URL;
@@ -211,6 +226,7 @@ export class CexyClient {
       url,
       restClient: this,
       userAgent: options.userAgent ?? this.#transport.config.userAgent ?? undefined,
+      keySigner: options.keySigner ?? (this.#transport.config.authenticator instanceof HmacAuthenticator ? this.#transport.config.authenticator : undefined),
     });
   }
 
