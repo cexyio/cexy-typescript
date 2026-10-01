@@ -121,10 +121,13 @@ describe("credentials placement", () => {
       expect(req.headers.has("Authorization"), id).toBe(false);
       if (OPERATIONS[id].auth === "none") {
         expect(req.headers.has("X-API-Key"), id).toBe(false);
+        expect(req.headers.has("X-API-Signature"), id).toBe(false);
         expect(req.headers.has("X-API-Secret"), id).toBe(false);
       } else {
+        // The default is request signing: the key id and a signature, never the secret.
         expect(req.headers.get("X-API-Key"), id).toBe(TEST_KEY);
-        expect(req.headers.get("X-API-Secret"), id).toBe(TEST_SECRET);
+        expect(req.headers.get("X-API-Signature"), id).toMatch(/^[0-9a-f]{64}$/);
+        expect(req.headers.has("X-API-Secret"), id).toBe(false);
       }
       expect(req.url.toString()).not.toContain(TEST_SECRET);
     }

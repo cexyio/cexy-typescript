@@ -197,9 +197,17 @@ describe("recording server: what the transport sends is what was signed", () => 
     expect(JSON.parse(seen[1]!.body.toString("utf8")).client_order_id).toBe(ORDER.client_order_id);
   });
 
-  it("headers mode (the default) is unchanged: X-API-Secret, no signature", async () => {
+  it("signing is the default: no auth option signs, and the signature verifies", async () => {
     const { base, seen } = await recordingServer(() => []);
     const c = new CexyClient({ apiKey: V.key_id, apiSecret: V.secret, baseUrl: base, allowInsecure: true, rateLimit: false });
+    await c.account.balances();
+    expect(seen[0]!.valid).toBe(true);
+    expect(seen[0]!.headers["x-api-secret"]).toBeUndefined();
+  });
+
+  it('auth: "headers" still sends X-API-Secret (for servers that accept it), with no signature', async () => {
+    const { base, seen } = await recordingServer(() => []);
+    const c = new CexyClient({ apiKey: V.key_id, apiSecret: V.secret, auth: "headers", baseUrl: base, allowInsecure: true, rateLimit: false });
     await c.account.balances();
     expect(seen[0]!.headers["x-api-secret"]).toBe(V.secret);
     expect(seen[0]!.headers["x-api-signature"]).toBeUndefined();
@@ -207,6 +215,17 @@ describe("recording server: what the transport sends is what was signed", () => 
 });
 
 describe("hmac transport rules", () => {
+  it("SIGNATURE_REQUIRED (the API refuses the secret): names the fix and is never retried", async () => {
+    const refused = { error: { code: "SIGNATURE_REQUIRED", message: "This API key must sign its requests; sending the secret is no longer accepted.", retryable: false } };
+    const { client, calls } = testClient({ auth: "headers", replies: [json(400, refused)], fallback: ok([]) });
+    const err = await client.account.balances().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CexyApiError);
+    expect((err as CexyApiError).code).toBe("SIGNATURE_REQUIRED");
+    expect((err as CexyApiError).message).toMatch(/auth: "hmac"/);
+    expect((err as CexyApiError).retryable).toBe(false);
+    expect(calls).toHaveLength(1);
+  });
+
   it("503 nonce_store_warming: waits Retry-After, re-signs, and leaves the clock offset alone", async () => {
     const warming = { error: { code: "SERVICE_UNAVAILABLE", message: "x", retryable: true, details: { reason: "nonce_store_warming" } } };
     const auth = new HmacAuthenticator(V.key_id, V.secret);

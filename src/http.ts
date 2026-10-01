@@ -162,6 +162,16 @@ export class Transport {
     } catch (err) {
       if (!(err instanceof CexyApiError)) throw err;
       const auth = this.config.authenticator;
+      if (err.code === "SIGNATURE_REQUIRED") {
+        throw new CexyApiError({
+          status: err.status,
+          code: err.code,
+          message: 'this API key must sign its requests: use auth: "hmac" (the default) instead of "headers"',
+          details: err.details,
+          requestId: err.requestId,
+          retryable: false,
+        });
+      }
       if (err.code === "KEY_NOT_SIGNABLE") {
         throw new CexyApiError({
           status: err.status,

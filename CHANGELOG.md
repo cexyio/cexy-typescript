@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-dev.12] (2026-10-01)
+
+### Changed
+- **Request signing is the default.** `new CexyClient({ apiKey, apiSecret })` now signs every
+  private request (`auth: "hmac"`); the secret is never sent. The API is switching off the old
+  `X-API-Secret` mode. `auth: "headers"` still selects it, for servers that accept it. Earlier
+  versions default to `headers` and stop working against the API once it refuses the secret,
+  unless they set `auth: "hmac"`: upgrade.
+- `SIGNATURE_REQUIRED` (400, the API refuses the secret header) is never retried and its message
+  names the fix (`auth: "hmac"`).
+
 ## [0.1.0-dev.11] (2026-10-01)
 
 ### Fixed
