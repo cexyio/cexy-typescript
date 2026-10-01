@@ -29,7 +29,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 - Retries honour a `Retry-After` header on any retryable error (for example a 503), not only on
-  429. `CexyApiError.retryAfterMs` carries the server's wait on every error.
+  429. `CexyApiError.retryAfterMs` carries the server's wait on every error. As with 429, a wait
+  above 120 s is not taken: such a 5xx (including a proxy's 502/503 page with a long `Retry-After`)
+  now fails at once instead of backing off.
 - `LiveBalances`: events that arrived while the owner lookup was in flight are dropped when the
   lookup ends in `ACCOUNT_MISMATCH` (they were kept until the next snapshot).
 
