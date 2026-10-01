@@ -13,7 +13,7 @@ permissions:
 env:
   # The cexy-api-spec commit the spec and conformance tests run against. Pinned so that a spec
   # change cannot silently change what CI tests; bump it in a reviewed PR.
-  SPEC_COMMIT: cf6e70ec21b73a02d3066b5aade796e78b904c82
+  SPEC_COMMIT: 5d5caa0148125fef8f879593f18906b627523002
   # One definition of the publish command, used verbatim by the build job's dry run and by the
   # publish job, both from $GITHUB_WORKSPACE with the tarball in ./pkg. PUBLISH_ARGS is expanded
   # unquoted on purpose (word splitting and the glob). "./" matters: npm reads "pkg/x.tgz" as

@@ -31,9 +31,10 @@ export interface CexyClientOptions {
   /** API key secret. Never logged, never put in a URL. */
   apiSecret?: string;
   /**
-   * How `apiKey`/`apiSecret` authenticate. `"headers"` (default): `X-API-Key` + `X-API-Secret`.
-   * `"hmac"`: request signing (accepted by the API since 2026-10-01). The secret never leaves
-   * the process; a key issued before signing existed fails with `KEY_NOT_SIGNABLE` (no fallback).
+   * How `apiKey`/`apiSecret` authenticate. `"hmac"` (default): every private request is signed
+   * and the secret never leaves the process; a key issued before signing existed fails with
+   * `KEY_NOT_SIGNABLE` (no fallback). `"headers"`: `X-API-Key` + `X-API-Secret`, which the API is
+   * switching off (`SIGNATURE_REQUIRED`); kept only for servers that still accept it.
    */
   auth?: "headers" | "hmac";
   /**
@@ -114,7 +115,7 @@ export class CexyClient {
     if (hasKey && options.authenticator) {
       throw new CexyConfigError("pass either apiKey/apiSecret or authenticator, not both");
     }
-    const mode = options.auth ?? "headers";
+    const mode = options.auth ?? "hmac";
     if (mode !== "headers" && mode !== "hmac") throw new CexyConfigError('auth must be "headers" or "hmac"');
     const authenticator =
       options.authenticator ??

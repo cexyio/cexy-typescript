@@ -27,8 +27,9 @@ export interface Authenticator {
 const REDACTED = "[REDACTED]";
 
 /**
- * Today's scheme: `X-API-Key` and `X-API-Secret` headers on every private request.
- * HMAC request signing (`auth: "hmac"`, `HmacAuthenticator`) is the other scheme.
+ * The old scheme (`auth: "headers"`): `X-API-Key` and `X-API-Secret` headers on every private
+ * request. The API is switching it off (`SIGNATURE_REQUIRED`); the default is request signing
+ * (`HmacAuthenticator`).
  */
 export class ApiKeyAuthenticator implements Authenticator {
   readonly kind = "api-key";

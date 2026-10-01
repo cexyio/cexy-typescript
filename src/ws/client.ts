@@ -443,7 +443,7 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
    * with `auth: "hmac"`).
    */
   authKey(): Promise<AuthResult> {
-    if (!this.#keySigner) throw new CexyWebSocketError("CONFIG", 'authKey() needs a client created with auth: "hmac"');
+    if (!this.#keySigner) throw new CexyWebSocketError("CONFIG", 'authKey() needs a client that signs requests (auth: "hmac", the default) or a keySigner');
     this.#token = null;
     this.#keyAuth = true;
     if (!this.connected) return Promise.resolve({ userId: null, queued: true });
