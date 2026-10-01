@@ -10,7 +10,7 @@ export interface WelcomeFrame {
   heartbeat_interval_seconds: number;
   max_subscriptions: number;
   connection_id: string;
-  /** Single-use challenge for `authKey()` (planned API-key authentication). */
+  /** Single-use challenge for `authKey()` (API-key authentication). */
   challenge?: string;
 }
 

@@ -125,7 +125,7 @@ export interface CexyWebSocketOptions {
   /** TEST-ONLY: see `WsClock`. */
   clock?: WsClock;
   /**
-   * Signs `authKey()` challenges (PLANNED API-key authentication). `CexyClient.websocket()` sets it
+   * Signs `authKey()` challenges (API-key authentication). `CexyClient.websocket()` sets it
    * when the client uses `auth: "hmac"`.
    */
   keySigner?: WsKeySigner;
@@ -174,9 +174,9 @@ export type AuthChangeReason =
   | "auth_failed"
   | "session_revoked"
   | "token_expired"
-  /** The API key was revoked or deleted (planned key authentication). */
+  /** The API key was revoked or deleted (key authentication). */
   | "key_revoked"
-  /** The API key expired (planned key authentication). */
+  /** The API key expired (key authentication). */
   | "key_expired"
   | "signed_out";
 
@@ -277,9 +277,8 @@ const defaultLogger: WsLogger = { warn: (m) => console.warn(`[cexy] ${m}`) };
  * CEXY.io WebSocket client: heartbeat, liveness, subscriptions with local limits, automatic
  * reconnect with re-auth and re-subscribe, and live order books.
  *
- * API-key authentication on the WebSocket is not available yet: `auth()` takes a session
- * access token. Programs holding only an API key get public channels and poll REST for
- * private state.
+ * Private channels need `auth()` with a session access token, or `authKey()` with an API key
+ * (on a client created with `auth: "hmac"`).
  */
 export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   readonly url: string;
@@ -437,7 +436,7 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   }
 
   /**
-   * Authenticates with the client's API key (PLANNED: the server does not accept it yet). Signs the
+   * Authenticates with the client's API key. Signs the
    * server's single-use challenge; the secret never leaves the process. After a reconnect it signs
    * the new connection's challenge automatically. A refused `auth_key` stops the automatic re-auth
    * (the server closes the socket after 5 failures). Needs `keySigner` (`CexyClient.websocket()`

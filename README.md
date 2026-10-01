@@ -264,8 +264,9 @@ What the client does for you:
 6. An `error` frame `CONCURRENT_MODIFICATION` with a null `id` means messages were dropped: resync every book and channel (the client emits `resync`).
 
 **Private channels** (`orders`, `balances`, `deposits`, `withdrawals`, `account`) need
-`await ws.auth(token)` with a session access token (it resolves with the `user_id` from `authenticated`). **API-key authentication on the WebSocket is not available yet**: with an API key,
-use public channels and poll REST for private state. If the session is revoked, the client emits
+`await ws.auth(token)` with a session access token (it resolves with the `user_id` from `authenticated`),
+or `await ws.authKey()` with an API key on a client created with `auth: "hmac"` (see
+[Request signing](#request-signing)). If the session is revoked, the client emits
 `authLost`; public channels keep working.
 
 The server ends private subscriptions, without any frame, when `auth()` succeeds as another
@@ -291,10 +292,11 @@ are skipped (after a short reorder window, `reorderWindowMs`, default 250 ms), t
 `balances.resync`, `deposits.resync` and `withdrawals.resync` (the last two planned) emit `resync`
 with `"balances_resync"`, `"deposits_resync"` or `"withdrawals_resync"`.
 
-### Request signing (planned)
+### Request signing
 
-The API will accept signed requests instead of the secret header. The SDK is ready; keep the default
-until the API announces it:
+The API accepts signed requests (since 2026-10-01). Opt in with `auth: "hmac"`; the default is still
+`auth: "headers"`, which sends the secret in `X-API-Secret` (the API marks that mode
+`Deprecation: true`):
 
 ```ts
 const cexy = new CexyClient({ apiKey, apiSecret, auth: "hmac" }); // default: auth: "headers"
@@ -304,6 +306,11 @@ With `auth: "hmac"` the secret never leaves your process: every private request 
 (`X-API-Key`, `X-API-Timestamp`, `X-API-Nonce`, `X-API-Signature`), every retry with a fresh
 timestamp and nonce. A key issued before signing existed fails with `KEY_NOT_SIGNABLE`: create a new
 API key. `cexy.websocket().authKey()` authenticates a WebSocket with the same key.
+
+The signed timestamp must be at most 30 s behind and 5 s ahead of the server clock: keep the system
+clock synchronised (NTP). After `SIGNATURE_EXPIRED` the client adopts the server clock (at most 1 h
+away) and resends once. For a few seconds after the API's replay-protection store restarts, it may
+answer `503 SERVICE_UNAVAILABLE` (`nonce_store_warming`); reads are retried after `Retry-After`.
 
 ### Live balances
 
