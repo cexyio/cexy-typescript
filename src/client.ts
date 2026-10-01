@@ -32,12 +32,12 @@ export interface CexyClientOptions {
   apiSecret?: string;
   /**
    * How `apiKey`/`apiSecret` authenticate. `"headers"` (default): `X-API-Key` + `X-API-Secret`.
-   * `"hmac"`: request signing (PLANNED: the API does not accept it yet). The secret never leaves
+   * `"hmac"`: request signing (accepted by the API since 2026-10-01). The secret never leaves
    * the process; a key issued before signing existed fails with `KEY_NOT_SIGNABLE` (no fallback).
    */
   auth?: "headers" | "hmac";
   /**
-   * Custom credentials scheme (for example HMAC signing once the API supports it).
+   * Custom credentials scheme (for example an `HmacAuthenticator` with your own options).
    * Mutually exclusive with `apiKey`/`apiSecret`.
    */
   authenticator?: Authenticator;

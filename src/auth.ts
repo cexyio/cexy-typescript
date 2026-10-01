@@ -28,7 +28,7 @@ const REDACTED = "[REDACTED]";
 
 /**
  * Today's scheme: `X-API-Key` and `X-API-Secret` headers on every private request.
- * HMAC request signing is planned before SDK 1.0 and will be another `Authenticator`.
+ * HMAC request signing (`auth: "hmac"`, `HmacAuthenticator`) is the other scheme.
  */
 export class ApiKeyAuthenticator implements Authenticator {
   readonly kind = "api-key";
