@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- `HmacAuthenticator`, `SIGNING_SCHEME`, `MAX_CLOCK_OFFSET_MS` and the `WsKeySigner` type are exported
+  from the package entry point (they were only reachable internally; `auth: "hmac"` was unaffected).
+
 ## [0.1.0-dev.10] (2026-10-01)
 
 ### Added
