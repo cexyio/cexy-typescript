@@ -207,6 +207,19 @@ describe("recording server: what the transport sends is what was signed", () => 
 });
 
 describe("hmac transport rules", () => {
+  it("503 nonce_store_warming: waits Retry-After, re-signs, and leaves the clock offset alone", async () => {
+    const warming = { error: { code: "SERVICE_UNAVAILABLE", message: "x", retryable: true, details: { reason: "nonce_store_warming" } } };
+    const auth = new HmacAuthenticator(V.key_id, V.secret);
+    const { client, calls, sleeps } = testClient({ creds: false, authenticator: auth, replies: [json(503, warming, { "retry-after": "2" }), ok([])] });
+    await client.account.balances();
+    expect(calls).toHaveLength(2);
+    expect(sleeps).toHaveLength(1);
+    expect(sleeps[0]!).toBeGreaterThanOrEqual(2000);
+    expect(sleeps[0]!).toBeLessThanOrEqual(3000);
+    expect(calls[0]!.headers.get("x-api-nonce")).not.toBe(calls[1]!.headers.get("x-api-nonce"));
+    expect(auth.clockOffsetMs).toBe(0);
+  });
+
   it("every retry re-signs with a fresh nonce", async () => {
     const { client, calls } = testClient({ auth: "hmac", replies: [json(503, { error: { code: "SERVICE_UNAVAILABLE", message: "x", retryable: true } }), ok([])] });
     await client.account.balances();

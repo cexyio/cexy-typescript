@@ -10,7 +10,6 @@ import {
   MAX_SERVER_WAIT_MS,
   RateLimitError,
   errorFromResponse,
-  retryAfterMs,
 } from "./errors.js";
 import type { RateLimiter } from "./limiter.js";
 import { OPERATIONS, type OperationId, type OperationInfo } from "./operations.js";
@@ -309,8 +308,7 @@ export class Transport {
 
 /** The server's wait hint on an error, in ms (null when it gave none or none is usable). */
 export function serverHintMs(err: unknown): number | null {
-  if (err instanceof RateLimitError) return err.retryAfterMs;
-  if (err instanceof CexyApiError) return retryAfterMs(undefined, err.details);
+  if (err instanceof CexyApiError) return err.retryAfterMs; // Retry-After on any status, not only 429
   return null;
 }
 

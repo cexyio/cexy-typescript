@@ -28,6 +28,8 @@ All notable changes to this project are documented here. The format follows
   forms the same way; this makes the signed request exactly the sent one.
 
 ### Fixed
+- Retries honour a `Retry-After` header on any retryable error (for example a 503), not only on
+  429. `CexyApiError.retryAfterMs` carries the server's wait on every error.
 - `LiveBalances`: events that arrived while the owner lookup was in flight are dropped when the
   lookup ends in `ACCOUNT_MISMATCH` (they were kept until the next snapshot).
 

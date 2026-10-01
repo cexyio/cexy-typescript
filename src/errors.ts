@@ -93,6 +93,11 @@ export class CexyApiError extends CexyError {
   readonly fields: Record<string, string>;
   readonly requestId: string | null;
   readonly retryable: boolean;
+  /**
+   * How long the server asked to wait (`Retry-After` or `details.retry_after_seconds`), in ms;
+   * null when it gave no usable value. Retries honour it on any retryable error (429, 503, ...).
+   */
+  readonly retryAfterMs: number | null;
 
   constructor(init: CexyApiErrorInit) {
     super(init.message);
@@ -102,6 +107,7 @@ export class CexyApiError extends CexyError {
     this.fields = init.fields ?? {};
     this.requestId = init.requestId ?? null;
     this.retryable = init.retryable;
+    this.retryAfterMs = retryAfterMs(init.headers, init.details);
   }
 
   override toString(): string {
@@ -129,7 +135,7 @@ export class ConflictError extends CexyApiError {}
 export class UnprocessableError extends CexyApiError {}
 /** 429: rate limited. `retryAfterMs` is how long the server asked to wait. */
 export class RateLimitError extends CexyApiError {
-  readonly retryAfterMs: number | null;
+  override readonly retryAfterMs: number | null;
   constructor(init: CexyApiErrorInit, retryAfterMs: number | null) {
     super(init);
     this.retryAfterMs = retryAfterMs;
