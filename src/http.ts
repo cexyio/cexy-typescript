@@ -13,6 +13,7 @@ import {
 } from "./errors.js";
 import type { RateLimiter } from "./limiter.js";
 import { OPERATIONS, type OperationId, type OperationInfo } from "./operations.js";
+import { stripTrailingSlashes } from "./url.js";
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
@@ -295,7 +296,7 @@ export class Transport {
       if (v === "." || v === "..") throw new CexyConfigError(`${info.sdkMethod}(): ${name} must not be "." or ".."`);
       return encodeComponent(v);
     });
-    const url = new URL(this.config.baseUrl.replace(/\/+$/, "") + path);
+    const url = new URL(stripTrailingSlashes(this.config.baseUrl) + path);
     // Built here (RFC 3986: %20 for a space, %2B for a plus), not with URLSearchParams (which
     // writes "+" for a space), so the query that is signed is exactly the query that is sent.
     const parts: string[] = [];

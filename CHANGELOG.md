@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- `baseUrl` trailing slashes are stripped in linear time (a `/\/+$/` regex was polynomial on a long run
+  of slashes; code-scanning alert js/polynomial-redos).
+
 ## [0.1.0-dev.12] (2026-10-01)
 
 ### Changed

@@ -1,7 +1,7 @@
 import { ApiKeyAuthenticator, type Authenticator } from "./auth.js";
 import { HmacAuthenticator } from "./signing.js";
 import { CexyConfigError } from "./errors.js";
-import { assertSecureUrl } from "./url.js";
+import { assertSecureUrl, stripTrailingSlashes } from "./url.js";
 import { Transport, type FetchLike, type RequestOptions, type RetryInfo } from "./http.js";
 import { RateLimiter, sleep as defaultSleep } from "./limiter.js";
 import {
@@ -125,7 +125,7 @@ export class CexyClient {
           : new ApiKeyAuthenticator(apiKey, apiSecret as string)
         : null);
 
-    const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    const baseUrl = stripTrailingSlashes(options.baseUrl ?? DEFAULT_BASE_URL);
     let parsed: URL;
     try {
       parsed = new URL(baseUrl);
