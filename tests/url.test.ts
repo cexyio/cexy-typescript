@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CexyClient, CexyConfigError, CexyWebSocket, CexyWebSocketError } from "../src/index.js";
 import { OPERATIONS } from "../src/operations.js";
 import { Transport } from "../src/http.js";
+import { stripTrailingSlashes } from "../src/url.js";
 import { mockFetch, ok, testClient } from "./helpers.js";
 
 const f = () => mockFetch().fetch;
@@ -92,5 +93,24 @@ describe("path values stay one segment", () => {
       await expect(client.pools.join(v, { base_amount: "1", quote_amount: "2" })).rejects.toBeInstanceOf(CexyConfigError);
     }
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("stripTrailingSlashes", () => {
+  it("removes only trailing slashes", () => {
+    expect(stripTrailingSlashes("https://api.cexy.io///")).toBe("https://api.cexy.io");
+    expect(stripTrailingSlashes("https://api.cexy.io")).toBe("https://api.cexy.io");
+    expect(stripTrailingSlashes("https://x/a/b/")).toBe("https://x/a/b");
+    expect(stripTrailingSlashes("///")).toBe("");
+    expect(stripTrailingSlashes("")).toBe("");
+  });
+
+  it("stays fast on ~100k slashes that are not at the end (the old /\\/+$/ was polynomial)", () => {
+    const hostile = "https://api.cexy.io" + "/".repeat(100_000) + "x";
+    const t0 = performance.now();
+    expect(stripTrailingSlashes(hostile)).toBe(hostile);
+    expect(stripTrailingSlashes("https://api.cexy.io" + "/".repeat(100_000))).toBe("https://api.cexy.io");
+    expect(() => new CexyClient({ baseUrl: hostile })).not.toThrow(/timeout/);
+    expect(performance.now() - t0).toBeLessThan(500);
   });
 });
