@@ -1,5 +1,6 @@
 export { CexyClient, DEFAULT_BASE_URL, DEFAULT_RPM_ANONYMOUS, DEFAULT_RPM_WITH_KEY, type CexyClientOptions } from "./client.js";
 export { ApiKeyAuthenticator, type AuthRequest, type Authenticator } from "./auth.js";
+export { HmacAuthenticator, MAX_CLOCK_OFFSET_MS, SIGNING_SCHEME } from "./signing.js";
 export {
   AuthenticationError,
   CexyApiError,
@@ -65,6 +66,7 @@ export {
   type SnapshotSource,
   type SubscribeResult,
   type WsLogger,
+  type WsKeySigner,
 } from "./ws/client.js";
 export { LiveOrderBook, WS_BOOK_DEPTH, type LiveOrderBookEvents, type LiveOrderBookOptions } from "./ws/orderbook.js";
 export { TypedEmitter, type EventMap, type Listener } from "./ws/emitter.js";
