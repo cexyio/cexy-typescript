@@ -14,6 +14,7 @@ export {
   InvalidAmountError,
   NotFoundError,
   OrderStateUnknownError,
+  PagingStalledError,
   CancelAllInterruptedError,
   MAX_SERVER_WAIT_MS,
   RateLimitError,
@@ -38,12 +39,15 @@ export {
   AssetsResource,
   ExportsResource,
   FeesResource,
+  FuturesResource,
   MarketsResource,
   NetworksResource,
   PoolsResource,
   TradingResource,
   WalletResource,
   type CancelAllParams,
+  type FuturesHistoryEnd,
+  type FuturesIterateOptions,
   type PlaceOrderResult,
 } from "./resources.js";
 export * from "./types.js";

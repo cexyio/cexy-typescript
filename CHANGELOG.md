@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-dev.13] (2026-10-02)
+
+### Added
+- Futures data (read only), `client.futures`: public market data (`markets()`, `market(coin)`,
+  `orderBook(coin, { depth })`, `candles(coin, { interval, before })`, `trades(coin, { limit })`) and the
+  account's own data with a `read` key (`positions()`, `openOrders()`, `fills({ cursor })`,
+  `funding({ cursor })`). Responses carry `as_of`/`stale`; account reads answer `has_account: false`
+  without a futures account. 503 `futures_data_unavailable` is retried like other retryable errors.
+- `futures.iterateFills()` / `iterateFunding()`: page until `next_cursor` is null, sending the opaque
+  cursor back verbatim. An empty page that repeats the cursor (busy) is re-asked after the normal backoff,
+  at most 3 times in a row (`maxBusyRetries`), then `PagingStalledError` (code `PAGING_STALLED`,
+  retryable). Shared conformance: `conformance/futures/history_paging.json`.
+- Types for the futures models. Generated names are kept (`PerpMarket`, `Level`, `Position`,
+  `Positions`, `OpenOrder`, `Funding`, `FuturesBook`, ...), except three that collide with spot models:
+  `FuturesCandle`, `FuturesFill` and `FuturesPublicTrade`.
+
 ### Fixed
 - `baseUrl` trailing slashes are stripped in linear time (a `/\/+$/` regex was polynomial on a long run
   of slashes; code-scanning alert js/polynomial-redos).

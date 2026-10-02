@@ -214,6 +214,47 @@ for await (const e of cexy.account.iterateLedger({}, { maxItems: 100 })) {
 
 Ids (`OrderId`, `TradeId`, `UserId`, …) are plain strings; the SDK does not check their format.
 
+## Futures data (read only)
+
+`cexy.futures` reads futures market data and your account's own futures data. Futures trading is not
+part of the API.
+
+Public market data needs no key:
+
+```ts
+const { markets, as_of, stale } = await cexy.futures.markets();
+const { market } = await cexy.futures.market("BTC");
+const book = await cexy.futures.orderBook("BTC", { depth: 10 }); // up to 20 levels a side
+const { candles } = await cexy.futures.candles("BTC", { interval: "1h" }); // or { interval, before: unixMs }
+const { trades } = await cexy.futures.trades("BTC", { limit: 50 }); // at most 100, newest first
+```
+
+Your account's own data needs an API key with the `read` scope (requests are signed):
+
+```ts
+const pos = await me.futures.positions(); // margin summary and open positions
+const open = await me.futures.openOrders();
+const page = await me.futures.fills(); // one page: { has_account, fills, next_cursor }
+for await (const fill of me.futures.iterateFills()) console.log(fill.id, fill.direction, fill.closed_pnl);
+for await (const pay of me.futures.iterateFunding()) console.log(pay.coin, pay.amount);
+```
+
+- **`as_of` / `stale`.** Responses carry `stale` (and `as_of`, when the data was read). `stale: true` means
+  the data is older than it should be. For books and trades it is the live feed's health, not the data's
+  age: a quiet book can be unchanged and current.
+- **No futures account.** Account reads answer `has_account: false` (not an error). The iterators then end
+  at once with no rows; their return value is `{ has_account }`.
+- **Paging.** Fills and funding are newest first, 30 days back. A page can be short, even empty, and still
+  have a `next_cursor`: keep paging until it is `null`. The cursor is opaque: pass it back exactly as given
+  (the SDK percent-encodes it). The iterators do this for you. When the server answers an empty page
+  whose `next_cursor` is the cursor just sent, the data source is busy: the iterator waits (the normal
+  retry backoff) and asks again, at most 3 times in a row (`{ maxBusyRetries }`), then throws
+  `PagingStalledError` (code `PAGING_STALLED`, retryable). The rows yielded before it are not the full
+  history; resume later with `iterateFills({ cursor: err.cursor })`.
+- **Unavailable.** When nothing usable is cached and the data cannot be read, the API answers 503
+  `SERVICE_UNAVAILABLE` with `details.reason` `futures_data_unavailable` and a `Retry-After`. It is
+  retryable: the SDK retries it like other retryable errors, honouring `Retry-After`.
+
 ## Rate limits
 
 The client has a token-bucket limiter: **100 requests/minute without a key** (the server allows 120/min

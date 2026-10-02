@@ -45,6 +45,15 @@ export const INVOKE: Record<OperationId, (c: CexyClient) => Promise<unknown>> = 
   cancel_all: (c) => c.trading.cancelAll({ symbol: "BTC/USDT" }),
   join_pool: (c) => c.pools.join("BTC/USDT", { base_amount: "0.1", quote_amount: "6000" }),
   exit_pool: (c) => c.pools.exit("BTC/USDT", { shares: "1.5" }),
+  markets: (c) => c.futures.markets(),
+  market: (c) => c.futures.market("BTC"),
+  orderbook: (c) => c.futures.orderBook("BTC", { depth: 10 }),
+  candles: (c) => c.futures.candles("BTC", { interval: "1h", before: 1790000000000 }),
+  trades: (c) => c.futures.trades("BTC", { limit: 5 }),
+  positions: (c) => c.futures.positions(),
+  open_orders: (c) => c.futures.openOrders(),
+  fills: (c) => c.futures.fills({ cursor: "c:1" }),
+  funding: (c) => c.futures.funding(),
 };
 
 /** Parses "GET /api/v1/markets" into an operation id using the table. */

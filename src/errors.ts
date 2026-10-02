@@ -173,8 +173,30 @@ const KNOWN_CODES: ReadonlySet<string> = new Set<KnownErrorCode>([
  * errors.yaml and `isKnownErrorCode()` returns false for them.
  * - `UNEXPECTED_REDIRECT`: the server answered with a 3xx. The SDK never follows redirects (the
  *   credentials would go to the redirect target); not retryable.
+ * - `PAGING_STALLED` (on a `PagingStalledError`, not a `CexyApiError`): a futures history
+ *   iterator got the same empty page too many times in a row; retryable.
  */
-export const CLIENT_ERROR_CODES = { UNEXPECTED_REDIRECT: "UNEXPECTED_REDIRECT" } as const;
+export const CLIENT_ERROR_CODES = { UNEXPECTED_REDIRECT: "UNEXPECTED_REDIRECT", PAGING_STALLED: "PAGING_STALLED" } as const;
+
+/**
+ * A futures history iterator (`futures.iterateFills()` / `iterateFunding()`) stopped because the
+ * server kept answering an empty page whose `next_cursor` equals the cursor sent (the provider is
+ * busy), more than `maxBusyRetries` times in a row. Local and retryable: the rows already yielded
+ * are NOT the complete history. Resume later with `{ cursor }` set to `cursor`.
+ */
+export class PagingStalledError extends CexyError {
+  readonly code = CLIENT_ERROR_CODES.PAGING_STALLED;
+  readonly retryable = true;
+  /** The cursor that stalled; pass it as `cursor` to resume from the same place. */
+  readonly cursor: string;
+  /** Requests made for that cursor (the first plus the retries). */
+  readonly attempts: number;
+  constructor(operation: string, cursor: string, attempts: number) {
+    super(`${operation}: the server is busy (the same empty page ${attempts} times in a row); retry later from this cursor`);
+    this.cursor = cursor;
+    this.attempts = attempts;
+  }
+}
 
 /** True for codes listed in errors.yaml (server codes; see `CLIENT_ERROR_CODES` for the SDK's own). */
 export function isKnownErrorCode(code: string): code is KnownErrorCode {

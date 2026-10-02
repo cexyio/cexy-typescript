@@ -47,6 +47,16 @@ export const OPERATIONS = {
   list_sub_accounts: op("GET", "/api/v1/account/sub-accounts", "api_key", "read", "account.subAccounts"),
   sub_account_balances: op("GET", "/api/v1/account/sub-accounts/{id}/balances", "api_key", "read", "account.subAccountBalances"),
   list_api_keys: op("GET", "/api/v1/account/api-keys", "api_key", "read", "account.apiKeys"),
+  // Futures data (read only). The spec's operation ids for these are short (`markets`, `fills`, ...).
+  markets: op("GET", "/api/v1/futures/markets", "none", null, "futures.markets"),
+  market: op("GET", "/api/v1/futures/markets/{coin}", "none", null, "futures.market"),
+  orderbook: op("GET", "/api/v1/futures/markets/{coin}/orderbook", "none", null, "futures.orderBook"),
+  candles: op("GET", "/api/v1/futures/markets/{coin}/candles", "none", null, "futures.candles"),
+  trades: op("GET", "/api/v1/futures/markets/{coin}/trades", "none", null, "futures.trades"),
+  positions: op("GET", "/api/v1/futures/positions", "api_key", "read", "futures.positions"),
+  open_orders: op("GET", "/api/v1/futures/orders", "api_key", "read", "futures.openOrders"),
+  fills: op("GET", "/api/v1/futures/fills", "api_key", "read", "futures.fills"),
+  funding: op("GET", "/api/v1/futures/funding", "api_key", "read", "futures.funding"),
   // Exports (read)
   export_deposits: op("GET", "/api/v1/exports/deposits", "api_key", "read", "exports.deposits"),
   export_ledger: op("GET", "/api/v1/exports/ledger", "api_key", "read", "exports.ledger"),
