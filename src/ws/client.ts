@@ -559,7 +559,15 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
    * Futures channel names are checked locally (see `futuresChannel`).
    */
   async subscribe(channels: string[]): Promise<SubscribeResult> {
-    const wanted = [...new Set(channels)];
+    // Two spellings of one channel (`ticker:btc_usdt`, `ticker:BTC/USDT`) are sent once, first spelling kept.
+    const seen = new Set<string>();
+    const wanted: string[] = [];
+    for (const c of channels) {
+      const k = typeof c === "string" ? canonicalChannel(c) : c;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      wanted.push(c);
+    }
     for (const c of wanted) {
       if (typeof c !== "string" || c === "" || c.length > MAX_CHANNEL_LENGTH) {
         throw new CexyWebSocketError("CONFIG", `invalid channel name: ${JSON.stringify(c)}`);
@@ -567,7 +575,8 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
       if (isFuturesChannel(c)) futuresConfig(futuresChannelProblem(c));
     }
     // Private channels waiting for the next successful auth count as held.
-    const held = (c: string) => this.#channels.has(c) || this.#pendingPrivate.has(c);
+    const heldKeys = new Set([...this.#channels, ...this.#pendingPrivate].map(canonicalChannel));
+    const held = (c: string) => heldKeys.has(canonicalChannel(c));
     const alreadySubscribed = wanted.filter(held);
     const fresh = wanted.filter((c) => !held(c));
     const room = Math.max(0, this.#opts.maxSubscriptions - this.#channels.size - this.#pendingPrivate.size);
@@ -1203,8 +1212,17 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     if (errors.length === 0) return { added, rejected: [] };
     // The ack lists the accepted channels by canonical name (spot symbols are normalised, futures
     // coins are not); the others were refused, one error frame each, in the order sent.
-    const acked = new Set(added.map(canonicalChannel));
-    const missing = ack ? channels.filter((c) => !acked.has(canonicalChannel(c))) : channels;
+    // Matched as a multiset: the ack can repeat a name (a channel already held, or two spellings).
+    const acked = new Map<string, number>();
+    for (const c of added) acked.set(canonicalChannel(c), (acked.get(canonicalChannel(c)) ?? 0) + 1);
+    const missing = ack
+      ? channels.filter((c) => {
+          const k = canonicalChannel(c);
+          const n = acked.get(k) ?? 0;
+          if (n > 0) acked.set(k, n - 1);
+          return n === 0;
+        })
+      : channels;
     const rejected: SubscribeRejection[] = [];
     missing.forEach((channel, i) => {
       const e = errors[Math.min(i, errors.length - 1)];
@@ -1333,15 +1351,17 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
 }
 
 /**
- * A channel name as the server acknowledges it, for matching: futures names exactly (coins are
- * case-sensitive); spot names case-insensitively with `_` read as `/` in the market symbol
- * (`ticker:btc_usdt` is acknowledged as `ticker:BTC/USDT`).
+ * A channel name as the server acknowledges it, for matching: the name is trimmed; the channel
+ * kind matches exactly; futures names exactly (coins are case-sensitive); a spot market symbol is
+ * trimmed and uppercased with `_` read as `/` (`ticker:btc_usdt` is acknowledged as `ticker:BTC/USDT`).
  */
 export function canonicalChannel(channel: string): string {
-  if (isFuturesChannel(channel)) return channel;
-  const i = channel.indexOf(":");
-  if (i < 0) return channel.toLowerCase();
-  return `${channel.slice(0, i).toLowerCase()}:${channel.slice(i + 1).toUpperCase().replace(/_/g, "/")}`;
+  const name = channel.trim();
+  if (isFuturesChannel(name)) return name;
+  const i = name.indexOf(":");
+  if (i < 0) return name;
+  // The kind matches exactly (`Ticker:BTC/USDT` is refused); only the market symbol is normalised.
+  return `${name.slice(0, i)}:${name.slice(i + 1).trim().toUpperCase().replace(/_/g, "/")}`;
 }
 
 function parseFrame(data: unknown): Record<string, unknown> | null {

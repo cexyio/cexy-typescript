@@ -52,6 +52,13 @@ All notable changes to this project are documented here. The format follows
 - Re-subscribing after a reconnect or a re-auth: a private channel refused `UNAUTHENTICATED` goes back
   to pending; any other refusal drops the channel and is reported as an `error` event (before, a
   refusal on reconnect left the channel held).
+- WebSocket subscribe matching (spec ace4a5e): channel kinds match exactly; only the spot market symbol
+  is canonicalised (trimmed, uppercased, `_` as `/`). `canonicalChannel()` no longer lowercases the kind
+  (`Ticker:BTC/USDT` is a different, refused channel, not a spelling of `ticker:BTC/USDT`) and trims the
+  name. Ack names are matched as a multiset; two spellings of one channel in a `subscribe()` call (or a
+  spelling of a channel already held) are sent once, first spelling kept. Shared conformance cases
+  `channel_kind_is_exact`, `same_channel_two_spellings_acked_twice`, `event_before_ack_is_delivered`,
+  `idless_error_not_attributed`.
 - `baseUrl` trailing slashes are stripped in linear time (a `/\/+$/` regex was polynomial on a long run
   of slashes; code-scanning alert js/polynomial-redos).
 

@@ -1,6 +1,6 @@
 /** Subscribe refusals (every channel family) and re-subscribe refusals after reconnect / re-auth. */
 import { afterEach, describe, expect, it } from "vitest";
-import { CexyWebSocket, CexyWebSocketError, type SubscribeResult } from "../src/index.js";
+import { canonicalChannel, CexyWebSocket, CexyWebSocketError, type SubscribeResult } from "../src/index.js";
 import { loadJson } from "./helpers.js";
 import { frames, startFakeServer } from "./ws-server.js";
 
@@ -63,6 +63,33 @@ describe("subscribe(): refusals are collected per request", () => {
     const r = await p;
     expect(r.rejected.map((x) => x.channel)).toEqual(["ticker:X/USDT"]);
     expect(ws.channels).toEqual(["ticker:btc_usdt"]);
+  });
+
+  it("channel kinds match exactly: Ticker:BTC/USDT is not a spelling of ticker:BTC/USDT", async () => {
+    expect(canonicalChannel(" Ticker:btc_usdt ")).toBe("Ticker:BTC/USDT");
+    expect(canonicalChannel("ticker:btc_usdt")).toBe("ticker:BTC/USDT");
+    expect(canonicalChannel("Orders")).toBe("Orders");
+    expect(canonicalChannel("futures.orderbook:btc")).toBe("futures.orderbook:btc");
+    const { srv, ws } = await setup();
+    const p = ws.subscribe(["Ticker:BTC/USDT", "ticker:BTC/USDT"]);
+    const s = await lastSub(0, 1);
+    expect(s.channels).toEqual(["Ticker:BTC/USDT", "ticker:BTC/USDT"]); // two channels: both sent
+    srv.conns[0]!.send({ type: "error", code: "VALIDATION_FAILED", message: "(any text)", id: s.id });
+    srv.conns[0]!.send({ type: "subscribed", channels: ["ticker:BTC/USDT"], id: s.id });
+    const r = await p;
+    expect(r.rejected.map((x) => [x.channel, x.error.code])).toEqual([["Ticker:BTC/USDT", "VALIDATION_FAILED"]]);
+    expect(ws.channels).toEqual(["ticker:BTC/USDT"]);
+  });
+
+  it("a channel already held under another spelling is not sent again", async () => {
+    const { srv, ws } = await setup();
+    const p = ws.subscribe(["ticker:btc_usdt"]);
+    const s = await lastSub(0, 1);
+    srv.conns[0]!.send({ type: "subscribed", channels: ["ticker:BTC/USDT"], id: s.id });
+    await p;
+    const r = await ws.subscribe(["ticker:BTC/USDT"]);
+    expect(r.alreadySubscribed).toEqual(["ticker:BTC/USDT"]);
+    expect(subs(0)).toHaveLength(1);
   });
 
   it("every channel refused: completes on the last error (no ack follows) and rejects; nothing held", async () => {
@@ -167,6 +194,10 @@ describe("conformance/ws/subscribe_refusals.json", () => {
       "limit_stop_last_error_covers_rest",
       "error_for_other_request_not_misattributed",
       "timeout_without_answer",
+      "channel_kind_is_exact",
+      "same_channel_two_spellings_acked_twice",
+      "event_before_ack_is_delivered",
+      "idless_error_not_attributed",
     ]);
   });
 
@@ -176,13 +207,20 @@ describe("conformance/ws/subscribe_refusals.json", () => {
     const { srv, ws } = await setup(timeoutCase ? 80 : 60_000);
     const conn = srv.conns[0]!;
     const requests = c.concurrent ?? [{ request: "r", send: c.send! }];
+    const events: string[] = [];
+    ws.on("event", (e) => events.push(e.type));
     const calls = requests.map((r) => outcome(ws.subscribe(r.send)));
     await srv.until(() => subs(0).length === requests.length, "subscribe frames");
-    // Spot and futures channels alike go in one frame per call, as given.
-    expect(subs(0).map((m) => m.channels)).toEqual(requests.map((r) => r.send));
+    // Spot and futures channels alike go in one frame per call, as given, except that spellings
+    // of one channel are sent once (first spelling kept).
+    const dedup = (send: string[]) => send.filter((ch, i) => send.findIndex((o) => canonicalChannel(o) === canonicalChannel(ch)) === i);
+    expect(subs(0).map((m) => m.channels)).toEqual(requests.map((r) => dedup(r.send)));
+    // Every subscribe carries an id.
+    for (const m of subs(0)) expect(typeof m.id === "string" && m.id !== "").toBe(true);
     const idOf = Object.fromEntries(requests.map((r, i) => [r.request, subs(0)[i].id]));
     for (const step of c.server) {
       if (step.to) conn.send({ ...step.frame, id: idOf[step.to] });
+      else if ("id" in step || !["error", "subscribed"].includes(step.type)) conn.send(step); // id-less error, or an event
       else conn.send({ ...step, id: idOf["r"] });
     }
     const results = await Promise.all(calls);
@@ -196,14 +234,16 @@ describe("conformance/ws/subscribe_refusals.json", () => {
     results.forEach((got, i) => {
       const want = expected[i];
       expect(got.fails, requests[i]!.request).toBe(want.fails);
-      expect(got.added).toEqual(want.added);
+      if (want.added) expect(got.added).toEqual(want.added);
       expect(got.refused).toEqual(want.refused);
       if (got.fails) expect(got.error?.channels).toEqual(Object.keys(want.refused));
     });
-    // Refused channels are not held; accepted ones are.
+    // Refused channels are not held; accepted ones are (compared by canonical name).
     const refused = new Set(expected.flatMap((w) => Object.keys(w.refused)));
-    const sent = requests.flatMap((r) => r.send);
+    const sent = requests.flatMap((r) => dedup(r.send));
     expect(ws.channels.sort()).toEqual(sent.filter((ch) => !refused.has(ch)).sort());
+    if (c.expect.held_after) expect(ws.channels.map(canonicalChannel)).toEqual(c.expect.held_after);
+    if (c.expect.events_delivered) expect(events).toEqual(c.expect.events_delivered);
     await ws.ping();
     expect(subs(0)).toHaveLength(requests.length); // nothing retried
   });
