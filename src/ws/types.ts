@@ -1,4 +1,4 @@
-import type { Order } from "../types.js";
+import type { FuturesCandle, FuturesPublicTrade, Level, OpenOrder, Order, Positions } from "../types.js";
 
 /** Protocol version this SDK was written for. */
 export const SUPPORTED_PROTOCOL_VERSION = 1;
@@ -104,6 +104,78 @@ export type ListResyncEvent = EventBase<"deposits.resync" | "withdrawals.resync"
 export type DepositEvent = EventBase<"deposit.detected" | "deposit.updated" | "deposit.completed", Data>;
 export type WithdrawalUpdatedEvent = EventBase<"withdrawal.updated", Data>;
 
+// Futures channels (see `futuresChannel`). No snapshot is sent on subscribe for the public ones:
+// seed from REST (`CexyClient.futures`). Book, mids, positions and orders frames are full
+// replacements. Coins are case-sensitive, exactly as `futures.markets()` lists them.
+
+/** `futures.mids`: every coin's mid price, the full set each time. */
+export interface FuturesMidsData {
+  mids: Record<string, string>;
+  /** When the server published the frame. */
+  as_of: string;
+}
+/** `futures.orderbook:{coin}`: the complete book (`full` is always true); levels are `{ price, size }`. */
+export interface FuturesOrderBookData {
+  coin: string;
+  full: boolean;
+  /** Best (highest) first. */
+  bids: Level[];
+  /** Best (lowest) first. */
+  asks: Level[];
+  as_of: string;
+}
+/** `futures.trades:{coin}`: one or more public trades (no ids). */
+export interface FuturesTradesData {
+  coin: string;
+  trades: FuturesPublicTrade[];
+}
+/** `futures.candles:{coin}:{interval}`: the current (possibly still open) candle. */
+export interface FuturesCandleData {
+  coin: string;
+  interval: string;
+  candle: FuturesCandle;
+}
+/** `futures.status`: the server's market-data connection went `live` or `degraded`. Sent only on a change. */
+export interface FuturesStatusData {
+  state: "live" | "degraded" | (string & {});
+  since: string;
+}
+/** `futures.account` `futures.positions`: margin summary and positions, in full. */
+export interface FuturesPositionsData {
+  positions: Positions;
+  as_of: string;
+  stale: boolean;
+}
+/** `futures.account` `futures.orders`: every open order, in full (replace your list). */
+export interface FuturesOrdersData {
+  orders: OpenOrder[];
+  as_of: string;
+  stale: boolean;
+}
+
+export type FuturesMidsEvent = EventBase<"futures.mids", FuturesMidsData>;
+export type FuturesOrderBookEvent = EventBase<"futures.orderbook.update", FuturesOrderBookData>;
+export type FuturesTradesEvent = EventBase<"futures.trades.new", FuturesTradesData>;
+export type FuturesCandleEvent = EventBase<"futures.candle.update", FuturesCandleData>;
+export type FuturesStatusEvent = EventBase<"futures.status", FuturesStatusData>;
+export type FuturesPositionsEvent = EventBase<"futures.positions", FuturesPositionsData>;
+export type FuturesOrdersEvent = EventBase<"futures.orders", FuturesOrdersData>;
+/**
+ * Data on `channel` may have been missed: refetch it over REST. Also followed by `resync`
+ * (`"futures_resync"`, channel). On `futures.account` the client re-subscribes by itself.
+ */
+export type FuturesResyncEvent = EventBase<"futures.resync", Record<string, never>>;
+
+export type FuturesEvent =
+  | FuturesMidsEvent
+  | FuturesOrderBookEvent
+  | FuturesTradesEvent
+  | FuturesCandleEvent
+  | FuturesStatusEvent
+  | FuturesPositionsEvent
+  | FuturesOrdersEvent
+  | FuturesResyncEvent;
+
 /** Every event type the SDK knows. Unknown types are ignored (they may be added without notice). */
 export type WsEvent =
   | OrderBookUpdateEvent
@@ -116,7 +188,8 @@ export type WsEvent =
   | BalancesResyncEvent
   | ListResyncEvent
   | DepositEvent
-  | WithdrawalUpdatedEvent;
+  | WithdrawalUpdatedEvent
+  | FuturesEvent;
 
 export const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set<WsEvent["type"]>([
   "ticker.update",
@@ -136,10 +209,22 @@ export const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set<WsEvent["type"]>([
   "balances.resync",
   "deposits.resync",
   "withdrawals.resync",
+  "futures.mids",
+  "futures.orderbook.update",
+  "futures.trades.new",
+  "futures.candle.update",
+  "futures.status",
+  "futures.positions",
+  "futures.orders",
+  "futures.resync",
 ]);
 
 /** Channels that need `auth`. */
-export const PRIVATE_CHANNELS: ReadonlySet<string> = new Set(["orders", "balances", "deposits", "withdrawals", "account"]);
+export const PRIVATE_CHANNELS: ReadonlySet<string> = new Set(["orders", "balances", "deposits", "withdrawals", "account", "futures.account"]);
+
+/** Candle intervals of `futures.candles:{coin}:{interval}` (exact, case-sensitive). */
+export const FUTURES_INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d"] as const;
+export type FuturesInterval = (typeof FUTURES_INTERVALS)[number];
 
 /** Minimal WebSocket surface shared by the browser/Node 22 global and the `ws` package. */
 export interface WebSocketLike {

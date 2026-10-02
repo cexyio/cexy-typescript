@@ -10,6 +10,7 @@ import {
   MAX_SERVER_WAIT_MS,
   NotFoundError,
   OrderStateUnknownError,
+  PagingCursorRepeatedError,
   PagingStalledError,
   RateLimitError,
 } from "./errors.js";
@@ -604,7 +605,8 @@ export interface FuturesIterateOptions extends IterateOptions, RequestOptions {
   /**
    * How many times in a row to re-ask the same cursor when the server answers an empty page whose
    * `next_cursor` equals the cursor sent (the provider is busy), waiting the client's normal
-   * backoff before each. Default 3; then `PagingStalledError` (code `PAGING_STALLED`).
+   * backoff before each. Default 3; then `PagingStalledError` (code `PAGING_STALLED`). Independent
+   * of `maxRetries` (a client with request retries off still rides out a busy provider).
    */
   maxBusyRetries?: number;
 }
@@ -667,6 +669,7 @@ export class FuturesResource extends Resource {
    * Every fill, newest first (`for await`). Ends when `next_cursor` is null, or at once without a
    * futures account (the return value says `has_account`). Throws `PagingStalledError`
    * (retryable) when the provider stays busy; the rows yielded until then are not complete.
+   * Throws `PagingCursorRepeatedError` (not retryable) when a page with rows repeats the cursor.
    */
   iterateFills(params?: Q<"fills">, iter?: FuturesIterateOptions): AsyncGenerator<FuturesFill, FuturesHistoryEnd, undefined> {
     return this.#history("futures.iterateFills", (cursor) => this.fills({ cursor }, iter), (p) => p.fills, params?.cursor, iter);
@@ -680,7 +683,9 @@ export class FuturesResource extends Resource {
    * The paging rules of conformance/futures/history_paging.json: the cursor is opaque and sent
    * back verbatim; short or empty pages go on until `next_cursor` is null; an EMPTY page whose
    * `next_cursor` equals the cursor just sent means busy: back off and re-ask the same cursor,
-   * at most `maxBusyRetries` times in a row, then fail with `PagingStalledError`.
+   * at most `maxBusyRetries` times in a row, then fail with `PagingStalledError`; a page WITH rows
+   * that repeats the cursor is a server error: its rows are yielded, then
+   * `PagingCursorRepeatedError` (never loop).
    */
   async *#history<P extends { has_account: boolean; next_cursor?: string | null }, T>(
     name: string,
@@ -714,6 +719,7 @@ export class FuturesResource extends Resource {
         yielded++;
       }
       if (next === null) return { has_account: true };
+      if (cursor !== undefined && next === cursor) throw new PagingCursorRepeatedError(name, cursor);
       cursor = next;
     }
   }

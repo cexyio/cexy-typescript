@@ -175,8 +175,29 @@ const KNOWN_CODES: ReadonlySet<string> = new Set<KnownErrorCode>([
  *   credentials would go to the redirect target); not retryable.
  * - `PAGING_STALLED` (on a `PagingStalledError`, not a `CexyApiError`): a futures history
  *   iterator got the same empty page too many times in a row; retryable.
+ * - `PAGING_CURSOR_REPEATED` (on a `PagingCursorRepeatedError`): a futures history page with rows
+ *   repeated the cursor just sent (a server error); not retryable.
  */
-export const CLIENT_ERROR_CODES = { UNEXPECTED_REDIRECT: "UNEXPECTED_REDIRECT", PAGING_STALLED: "PAGING_STALLED" } as const;
+export const CLIENT_ERROR_CODES = {
+  UNEXPECTED_REDIRECT: "UNEXPECTED_REDIRECT",
+  PAGING_STALLED: "PAGING_STALLED",
+  PAGING_CURSOR_REPEATED: "PAGING_CURSOR_REPEATED",
+} as const;
+
+/**
+ * A futures history page that had rows also returned, as `next_cursor`, the cursor just sent: a
+ * server error. Its rows were yielded; the iterator stops instead of looping. Not retryable.
+ */
+export class PagingCursorRepeatedError extends CexyError {
+  readonly code = CLIENT_ERROR_CODES.PAGING_CURSOR_REPEATED;
+  readonly retryable = false;
+  /** The cursor the server repeated. */
+  readonly cursor: string;
+  constructor(operation: string, cursor: string) {
+    super(`${operation}: the server returned the cursor just sent with a page of rows; stopping instead of looping`);
+    this.cursor = cursor;
+  }
+}
 
 /**
  * A futures history iterator (`futures.iterateFills()` / `iterateFunding()`) stopped because the

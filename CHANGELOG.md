@@ -18,6 +18,21 @@ All notable changes to this project are documented here. The format follows
   cursor back verbatim. An empty page that repeats the cursor (busy) is re-asked after the normal backoff,
   at most 3 times in a row (`maxBusyRetries`), then `PagingStalledError` (code `PAGING_STALLED`,
   retryable). Shared conformance: `conformance/futures/history_paging.json`.
+- `PagingCursorRepeatedError` (code `PAGING_CURSOR_REPEATED`, not retryable): a history page with rows
+  that repeats the cursor just sent is yielded, then the iterator stops instead of looping.
+  `maxBusyRetries` is independent of `maxRetries`.
+- Futures WebSocket channels: `futuresChannel.mids()`, `.orderbook(coin)`, `.trades(coin)`,
+  `.candles(coin, interval)`, `.status()`, `.account()` (coin and interval checked locally: `CONFIG`).
+  Typed events `futures.mids`, `futures.orderbook.update`, `futures.trades.new`,
+  `futures.candle.update`, `futures.status`, `futures.positions`, `futures.orders` and `futures.resync`
+  (also `resync` with `"futures_resync"` and the channel; the `resync` event now passes an optional
+  channel). `futures.account` is private and held until `auth()`/`authKey()` succeeds
+  (`pendingPrivateChannels`); on its `futures.resync` the client unsubscribes and subscribes again, and a
+  refusal is reported (`error`) and drops the channel. Futures channels are subscribed one per request,
+  so a refusal names its channel (`CexyWebSocketError.channels`); refused futures subscribes are not
+  retried. Shared conformance: `conformance/ws/futures.json`.
+- `MAX_PING_INTERVAL_MS` (60 s): a larger `pingIntervalMs` is a `CONFIG` error (the server closes
+  connections silent for 90 s); the default stays 30 s.
 - Types for the futures models. Generated names are kept (`PerpMarket`, `Level`, `Position`,
   `Positions`, `OpenOrder`, `Funding`, `FuturesBook`, ...), except three that collide with spot models:
   `FuturesCandle`, `FuturesFill` and `FuturesPublicTrade`.

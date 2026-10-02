@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CLIENT_ERROR_CODES, PagingStalledError, isRetryable } from "../src/index.js";
+import { CLIENT_ERROR_CODES, PagingCursorRepeatedError, PagingStalledError, isRetryable } from "../src/index.js";
 import { json, loadJson, ok, testClient } from "./helpers.js";
 
 interface PagingPage {
@@ -21,23 +21,26 @@ interface PagingCase {
   };
 }
 
-const paging = loadJson<{ operation: string; max_retries: number; cases: PagingCase[] }>("conformance/futures/history_paging.json");
+const paging = loadJson<{ operation: string; max_busy_retries: number; cases: PagingCase[] }>("conformance/futures/history_paging.json");
 
 describe("conformance/futures/history_paging.json", () => {
   it("covers GET /api/v1/futures/fills with the default of 3 busy retries", () => {
     expect(paging.operation).toBe("GET /api/v1/futures/fills");
-    expect(paging.max_retries).toBe(3);
+    expect(paging.max_busy_retries).toBe(3);
     expect(paging.cases.map((c) => c.id)).toEqual([
       "short_pages_until_null",
       "cursor_sent_back_verbatim",
       "busy_provider_same_cursor_retried",
       "busy_provider_gives_up_after_max_retries",
+      "nonempty_page_repeating_cursor_fails",
       "no_futures_account",
     ]);
   });
 
   it.each(paging.cases.map((c) => [c.id, c] as const))("%s", async (_id, c) => {
+    // Request retries off: busy pages are ridden out by maxBusyRetries alone.
     const { client, calls, sleeps } = testClient({
+      maxRetries: 0,
       replies: c.pages.map((p) => ok(p.response)),
       fallback: () => new Error("more requests than the case has pages"),
     });
@@ -74,13 +77,14 @@ describe("conformance/futures/history_paging.json", () => {
 
     if (c.expect.error_code) {
       expect(ids).toEqual(c.expect.ids_before_error);
-      expect(error).toBeInstanceOf(PagingStalledError);
-      const e = error as PagingStalledError;
+      const cls = c.expect.error_code === "PAGING_STALLED" ? PagingStalledError : PagingCursorRepeatedError;
+      expect(error).toBeInstanceOf(cls);
+      const e = error as PagingStalledError | PagingCursorRepeatedError;
       expect(e.code).toBe(c.expect.error_code);
       expect(e.retryable).toBe(c.expect.error_retryable);
-      expect(isRetryable(e)).toBe(true);
+      expect(isRetryable(e)).toBe(c.expect.error_retryable);
       expect(e.cursor).toBe(c.pages[c.pages.length - 1]!.request_cursor);
-      expect(e.attempts).toBe(paging.max_retries + 1);
+      if (e instanceof PagingStalledError) expect(e.attempts).toBe(paging.max_busy_retries + 1);
     } else {
       expect(error).toBeUndefined();
       expect(ids).toEqual(c.expect.ids);

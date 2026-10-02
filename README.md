@@ -333,6 +333,46 @@ are skipped (after a short reorder window, `reorderWindowMs`, default 250 ms), t
 `balances.resync`, `deposits.resync` and `withdrawals.resync` (the last two planned) emit `resync`
 with `"balances_resync"`, `"deposits_resync"` or `"withdrawals_resync"`.
 
+### Futures channels
+
+Build names with `futuresChannel` (an invalid coin or interval is a local `CONFIG` error and nothing is
+sent):
+
+```ts
+import { futuresChannel } from "@cexyio/cexy";
+
+const [{ markets }, book] = await Promise.all([cexy.futures.markets(), cexy.futures.orderBook("BTC")]); // seed from REST
+await ws.subscribe([futuresChannel.mids(), futuresChannel.orderbook("BTC"), futuresChannel.candles("BTC", "1m")]);
+ws.on("event", (e) => {
+  if (e.type === "futures.orderbook.update") console.log(e.data.bids[0]?.price, e.data.asks[0]?.price);
+  if (e.type === "futures.positions") console.log(e.data.positions.account_value, e.data.stale);
+});
+ws.on("resync", (reason, channel) => {
+  if (reason === "futures_resync") {/* refetch `channel` over REST */}
+});
+```
+
+- Public: `futures.mids`, `futures.orderbook:{coin}`, `futures.trades:{coin}`,
+  `futures.candles:{coin}:{interval}` (`1m 5m 15m 1h 4h 1d`) and `futures.status` (`live` / `degraded`,
+  only on a change). **No snapshot arrives on subscribe: seed from REST** (`cexy.futures`). Book, mids,
+  positions and orders frames are full replacements; book levels are `{ price, size }` objects (not the spot
+  `[price, quantity]` arrays). Events: `futures.mids`, `futures.orderbook.update`, `futures.trades.new`,
+  `futures.candle.update`, `futures.status`.
+- **Coins are case-sensitive**: use them exactly as `cexy.futures.markets()` lists them (`BTC`, `kPEPE`);
+  `btc` is refused `NOT_FOUND`.
+- Private: `futures.account` (`futures.positions` and `futures.orders`, in full on subscribe and on change).
+  It is held until `auth()` / `authKey()` succeeds (`ws.pendingPrivateChannels`), then sent.
+- `futures.resync` (data may have been missed) is delivered as an event plus `resync` with
+  `"futures_resync"` and the channel: refetch that channel over REST. **On `futures.account` the client also
+  unsubscribes and subscribes again by itself** (the server's account updates stopped); if that subscribe is
+  refused (e.g. `NOT_FOUND` "No futures account") it emits `error` and stops holding the channel.
+- Each futures channel is subscribed in a request of its own, so a refusal (`RATE_LIMITED`, `NOT_FOUND`,
+  `VALIDATION_FAILED`, `SERVICE_UNAVAILABLE`) names its channel (`err.channels`). A refused channel is not
+  held and **not retried automatically**: error frames carry no retry hint, so wait before trying again
+  (about 60 s after `RATE_LIMITED`).
+- The client pings every 30 s (`pingIntervalMs` may not exceed 60 s; the server closes connections silent
+  for 90 s or more).
+
 ### Request signing
 
 Every private request is signed (`auth: "hmac"`, the default since 0.1.0-dev.12). The API is
