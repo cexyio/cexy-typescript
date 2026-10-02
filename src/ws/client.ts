@@ -38,13 +38,16 @@ export class CexyWebSocketError extends CexyError {
   readonly code: string;
   /** True when this came from a server `error` frame (not a local guard or disconnect). */
   readonly fromServer: boolean;
-  /** The channels a refused subscribe asked for, when known (futures channels: always). */
+  /** The channels a refused subscribe concerns, when known (refusals: always). */
   readonly channels: string[];
-  constructor(code: string, message: string, fromServer = false, channels: string[] = []) {
+  /** When `subscribe()` rejects because every channel was refused: each channel with its own error. */
+  readonly rejected: SubscribeRejection[];
+  constructor(code: string, message: string, fromServer = false, channels: string[] = [], rejected: SubscribeRejection[] = []) {
     super(message);
     this.code = code;
     this.fromServer = fromServer;
     this.channels = channels;
+    this.rejected = rejected;
   }
 }
 
@@ -549,9 +552,11 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
    * Subscribes to channels, e.g. `["ticker:BTC/USDT", "trades:BTC/USDT"]`. Resolves when the
    * server confirms. Beyond `maxSubscriptions` channels are refused locally (see `refused`).
    * `futures.account` is held while the connection is not authenticated and sent after the next
-   * successful `auth()`/`authKey()` (`pendingPrivateChannels`). Each futures channel is sent in a request of its own, so a refusal
-   * names its channel (`CexyWebSocketError.channels`); a refused channel is not held and not
-   * retried. Futures channel names are checked locally (see `futuresChannel`).
+   * successful `auth()`/`authKey()` (`pendingPrivateChannels`). The channels go in one frame; the
+   * server's refusals are attributed to channels by comparing its ack with what was sent (see
+   * `rejected`). A refused channel is not held and not retried. Rejects only when every channel
+   * sent was refused, or `TIMEOUT` (no ack, no error: the channels stay held) / disconnect.
+   * Futures channel names are checked locally (see `futuresChannel`).
    */
   async subscribe(channels: string[]): Promise<SubscribeResult> {
     const wanted = [...new Set(channels)];
@@ -584,7 +589,7 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     const first = r.rejected[0];
     if (first && r.rejected.length === send.length) {
       // Every channel sent was refused.
-      throw new CexyWebSocketError(first.error.code, first.error.message, true, r.rejected.map((x) => x.channel));
+      throw new CexyWebSocketError(first.error.code, first.error.message, true, r.rejected.map((x) => x.channel), r.rejected);
     }
     if (r.failure !== undefined && r.added.length === 0 && r.rejected.length === 0) throw toError(r.failure);
     return { added: r.added, refused, alreadySubscribed, rejected: r.rejected };
@@ -1133,34 +1138,21 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   }
 
   /**
-   * Sends subscribe requests: every futures channel in a request of its own, the other channels
-   * together in one. `onRejected` runs at once for each channel the server refused (later frames
-   * must see it gone); another failure (no ack and no error in time, a disconnect) is `failure`.
+   * Sends one subscribe frame for `channels`. `onRejected` runs at once for each channel the server
+   * refused (later frames must see it gone); another failure (no ack and no error in time, a
+   * disconnect) is `failure`.
    */
   async #subscribeGroups(
     channels: string[],
     onRejected: (x: SubscribeRejection) => void,
   ): Promise<{ added: string[]; rejected: SubscribeRejection[]; failure?: unknown }> {
-    const others = channels.filter((c) => !isFuturesChannel(c));
-    const groups = [...(others.length ? [others] : []), ...channels.filter(isFuturesChannel).map((c) => [c])];
-    const out: { added: string[]; rejected: SubscribeRejection[]; failure?: unknown } = { added: [], rejected: [] };
-    await Promise.all(
-      groups.map((g) =>
-        this.#sendSubscribe(g).then(
-          (r) => {
-            out.added.push(...r.added);
-            for (const x of r.rejected) {
-              out.rejected.push(x);
-              onRejected(x);
-            }
-          },
-          (err: unknown) => {
-            if (out.failure === undefined) out.failure = err;
-          },
-        ),
-      ),
-    );
-    return out;
+    try {
+      const r = await this.#sendSubscribe(channels);
+      for (const x of r.rejected) onRejected(x);
+      return r;
+    } catch (err) {
+      return { added: [], rejected: [], failure: err };
+    }
   }
 
   /**
@@ -1210,10 +1202,9 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     const added = Array.isArray(raw) ? raw.filter((c): c is string => typeof c === "string") : [];
     if (errors.length === 0) return { added, rejected: [] };
     // The ack lists the accepted channels by canonical name (spot symbols are normalised, futures
-    // coins are not); the others were refused, one error frame each, in order.
-    const exact = new Set(added);
-    const folded = new Set(added.map((c) => c.toLowerCase()));
-    const missing = ack ? channels.filter((c) => !exact.has(c) && (isFuturesChannel(c) || !folded.has(c.toLowerCase()))) : channels;
+    // coins are not); the others were refused, one error frame each, in the order sent.
+    const acked = new Set(added.map(canonicalChannel));
+    const missing = ack ? channels.filter((c) => !acked.has(canonicalChannel(c))) : channels;
     const rejected: SubscribeRejection[] = [];
     missing.forEach((channel, i) => {
       const e = errors[Math.min(i, errors.length - 1)];
@@ -1339,6 +1330,18 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   #newId(): string {
     return String(this.#nextId++);
   }
+}
+
+/**
+ * A channel name as the server acknowledges it, for matching: futures names exactly (coins are
+ * case-sensitive); spot names case-insensitively with `_` read as `/` in the market symbol
+ * (`ticker:btc_usdt` is acknowledged as `ticker:BTC/USDT`).
+ */
+export function canonicalChannel(channel: string): string {
+  if (isFuturesChannel(channel)) return channel;
+  const i = channel.indexOf(":");
+  if (i < 0) return channel.toLowerCase();
+  return `${channel.slice(0, i).toLowerCase()}:${channel.slice(i + 1).toUpperCase().replace(/_/g, "/")}`;
 }
 
 function parseFrame(data: unknown): Record<string, unknown> | null {

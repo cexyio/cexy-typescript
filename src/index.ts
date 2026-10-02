@@ -57,6 +57,7 @@ export {
   CexyWebSocket,
   CexyWebSocketError,
   DEFAULT_PING_INTERVAL_MS,
+  canonicalChannel,
   DEFAULT_WS_URL,
   MAX_PING_INTERVAL_MS,
   REAL_CLOCK,

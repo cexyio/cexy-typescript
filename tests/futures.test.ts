@@ -4,16 +4,20 @@ import { json, loadJson, ok, testClient } from "./helpers.js";
 
 interface PagingPage {
   request_cursor: string | null;
-  response: { has_account: boolean; fills: { id: string }[]; next_cursor: string | null };
+  http_status?: number;
+  headers?: Record<string, string>;
+  response: any;
 }
 interface PagingCase {
   id: string;
   pages: PagingPage[];
   expect: {
     ids?: string[];
+    times?: number[];
     ids_before_error?: string[];
     requests: number;
     sleeps: number;
+    min_sleep_seconds?: number;
     encoded_query_of_request_2?: string;
     error_code?: string;
     error_retryable?: boolean;
@@ -21,76 +25,88 @@ interface PagingCase {
   };
 }
 
-const paging = loadJson<{ operation: string; max_busy_retries: number; cases: PagingCase[] }>("conformance/futures/history_paging.json");
+const paging = loadJson<{ operation: string; max_busy_retries: number; cases: PagingCase[]; funding_cases: PagingCase[] }>(
+  "conformance/futures/history_paging.json",
+);
+
+async function runPaging(kind: "fills" | "funding", c: PagingCase) {
+  // A case with an error answer needs the normal request-retry policy; the others run with request
+  // retries off, so busy pages are ridden out by maxBusyRetries alone.
+  const withHttpError = c.pages.some((p) => p.http_status !== undefined);
+  const { client, calls, sleeps } = testClient({
+    maxRetries: withHttpError ? 3 : 0,
+    replies: c.pages.map((p) => (p.http_status !== undefined ? json(p.http_status, p.response, p.headers ?? {}) : ok(p.response))),
+    fallback: () => new Error("more requests than the case has pages"),
+  });
+  const rows: any[] = [];
+  let error: unknown;
+  let end: { has_account: boolean } | undefined;
+  try {
+    const it: AsyncGenerator<any, { has_account: boolean }> = kind === "fills" ? client.futures.iterateFills() : client.futures.iterateFunding();
+    for (;;) {
+      const r = await it.next();
+      if (r.done) {
+        end = r.value;
+        break;
+      }
+      rows.push(r.value);
+    }
+  } catch (e) {
+    error = e;
+  }
+
+  // What the SDK sent: the cursor of each page, verbatim (absent on the first request).
+  expect(calls.length).toBe(c.expect.requests);
+  calls.forEach((call, i) => {
+    expect(call.method).toBe("GET");
+    expect(call.url.pathname).toBe(`/api/v1/futures/${kind}`);
+    expect(call.url.searchParams.get("cursor"), `request ${i + 1}`).toBe(c.pages[i]!.request_cursor);
+    expect(call.headers.get("X-API-Signature"), "signed").toMatch(/^[0-9a-f]{64}$/);
+  });
+  expect(calls[0]!.url.search).toBe("");
+  expect(sleeps.length).toBe(c.expect.sleeps);
+  if (c.expect.min_sleep_seconds !== undefined) for (const ms of sleeps) expect(ms).toBeGreaterThanOrEqual(c.expect.min_sleep_seconds * 1000);
+  if (c.expect.encoded_query_of_request_2 !== undefined) {
+    expect(calls[1]!.url.search).toBe(`?${c.expect.encoded_query_of_request_2}`);
+  }
+
+  if (c.expect.error_code) {
+    expect(rows.map((r) => r.id)).toEqual(c.expect.ids_before_error);
+    const cls = c.expect.error_code === "PAGING_STALLED" ? PagingStalledError : PagingCursorRepeatedError;
+    expect(error).toBeInstanceOf(cls);
+    const e = error as PagingStalledError | PagingCursorRepeatedError;
+    expect(e.code).toBe(c.expect.error_code);
+    expect(e.retryable).toBe(c.expect.error_retryable);
+    expect(isRetryable(e)).toBe(c.expect.error_retryable);
+    expect(e.cursor).toBe(c.pages[c.pages.length - 1]!.request_cursor);
+    if (e instanceof PagingStalledError) expect(e.attempts).toBe(paging.max_busy_retries + 1);
+  } else {
+    expect(error).toBeUndefined();
+    if (c.expect.ids) expect(rows.map((r) => r.id)).toEqual(c.expect.ids);
+    if (c.expect.times) expect(rows.map((r) => r.time)).toEqual(c.expect.times);
+    expect(end).toEqual({ has_account: c.expect.has_account ?? true });
+  }
+}
 
 describe("conformance/futures/history_paging.json", () => {
-  it("covers GET /api/v1/futures/fills with the default of 3 busy retries", () => {
+  it("covers GET /api/v1/futures/fills (and funding_cases) with the default of 3 busy retries", () => {
     expect(paging.operation).toBe("GET /api/v1/futures/fills");
     expect(paging.max_busy_retries).toBe(3);
     expect(paging.cases.map((c) => c.id)).toEqual([
       "short_pages_until_null",
       "cursor_sent_back_verbatim",
+      "real_cursor_formats",
+      "unavailable_mid_paging_retried",
       "busy_provider_same_cursor_retried",
       "busy_provider_gives_up_after_max_retries",
       "nonempty_page_repeating_cursor_fails",
       "no_futures_account",
     ]);
+    expect(paging.funding_cases.map((c) => c.id)).toEqual(["funding_short_pages_until_null", "funding_busy_then_rows", "funding_no_account"]);
   });
 
-  it.each(paging.cases.map((c) => [c.id, c] as const))("%s", async (_id, c) => {
-    // Request retries off: busy pages are ridden out by maxBusyRetries alone.
-    const { client, calls, sleeps } = testClient({
-      maxRetries: 0,
-      replies: c.pages.map((p) => ok(p.response)),
-      fallback: () => new Error("more requests than the case has pages"),
-    });
-    const ids: string[] = [];
-    let error: unknown;
-    let end: { has_account: boolean } | undefined;
-    try {
-      const it = client.futures.iterateFills();
-      for (;;) {
-        const r = await it.next();
-        if (r.done) {
-          end = r.value;
-          break;
-        }
-        ids.push(r.value.id);
-      }
-    } catch (e) {
-      error = e;
-    }
-
-    // What the SDK sent: the cursor of each page, verbatim (absent on the first request).
-    expect(calls.length).toBe(c.expect.requests);
-    calls.forEach((call, i) => {
-      expect(call.method).toBe("GET");
-      expect(call.url.pathname).toBe("/api/v1/futures/fills");
-      expect(call.url.searchParams.get("cursor"), `request ${i + 1}`).toBe(c.pages[i]!.request_cursor);
-      expect(call.headers.get("X-API-Signature"), "signed").toMatch(/^[0-9a-f]{64}$/);
-    });
-    expect(calls[0]!.url.search).toBe("");
-    expect(sleeps.length).toBe(c.expect.sleeps);
-    if (c.expect.encoded_query_of_request_2 !== undefined) {
-      expect(calls[1]!.url.search).toBe(`?${c.expect.encoded_query_of_request_2}`);
-    }
-
-    if (c.expect.error_code) {
-      expect(ids).toEqual(c.expect.ids_before_error);
-      const cls = c.expect.error_code === "PAGING_STALLED" ? PagingStalledError : PagingCursorRepeatedError;
-      expect(error).toBeInstanceOf(cls);
-      const e = error as PagingStalledError | PagingCursorRepeatedError;
-      expect(e.code).toBe(c.expect.error_code);
-      expect(e.retryable).toBe(c.expect.error_retryable);
-      expect(isRetryable(e)).toBe(c.expect.error_retryable);
-      expect(e.cursor).toBe(c.pages[c.pages.length - 1]!.request_cursor);
-      if (e instanceof PagingStalledError) expect(e.attempts).toBe(paging.max_busy_retries + 1);
-    } else {
-      expect(error).toBeUndefined();
-      expect(ids).toEqual(c.expect.ids);
-      expect(end).toEqual({ has_account: c.expect.has_account ?? true });
-    }
-  });
+  it.each(paging.cases.map((c) => [c.id, c] as const))("fills: %s", (_id, c) => runPaging("fills", c));
+  it.each(paging.funding_cases.map((c) => [c.id, c] as const))("funding: %s", (_id, c) => runPaging("funding", c));
 });
 
 describe("futures history iterators", () => {

@@ -28,9 +28,7 @@ All notable changes to this project are documented here. The format follows
   (also `resync` with `"futures_resync"` and the channel; the `resync` event now passes an optional
   channel). `futures.account` is private and held until `auth()`/`authKey()` succeeds
   (`pendingPrivateChannels`); on its `futures.resync` the client unsubscribes and subscribes again, and a
-  refusal is reported (`error`) and drops the channel. Futures channels are subscribed one per request,
-  so a refusal names its channel (`CexyWebSocketError.channels`); refused futures subscribes are not
-  retried. Shared conformance: `conformance/ws/futures.json`.
+  refusal is reported (`error`) and drops the channel. Refused futures subscribes are not retried. Shared conformance: `conformance/ws/futures.json`.
 - `MAX_PING_INTERVAL_MS` (60 s): a larger `pingIntervalMs` is a `CONFIG` error (the server closes
   connections silent for 90 s); the default stays 30 s.
 - Types for the futures models. Generated names are kept (`PerpMarket`, `Level`, `Position`,
@@ -44,10 +42,12 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 - WebSocket subscribe refusals, every channel family: the error frames of a subscribe (one per refused
   channel, sent before its single `subscribed` ack, or with no ack when every channel was refused) are
-  collected instead of failing the whole call on the first one. The request completes on the ack, once
+  collected (by request id) instead of failing the whole call on the first one, and attributed by
+  comparing the ack with what was sent (spot names case-insensitively with `_` as `/`, futures names
+  exactly; `canonicalChannel()`). The request completes on the ack, once
   every channel was refused, or on the ack timeout after at least one error (then all refused).
   `subscribe()` resolves with the accepted channels and `rejected: [{ channel, error }]`, and rejects
-  only when every channel sent was refused. Before, a partly refused batch rejected and forgot the
+  only when every channel sent was refused (the error's `rejected` then lists each channel and its error). Before, a partly refused batch rejected and forgot the
   channels the server had accepted. Refused channels are not held and not retried.
 - Re-subscribing after a reconnect or a re-auth: a private channel refused `UNAUTHENTICATED` goes back
   to pending; any other refusal drops the channel and is reported as an `error` event (before, a

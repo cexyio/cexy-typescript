@@ -1,6 +1,7 @@
 /** Subscribe refusals (every channel family) and re-subscribe refusals after reconnect / re-auth. */
 import { afterEach, describe, expect, it } from "vitest";
-import { CexyWebSocket, CexyWebSocketError } from "../src/index.js";
+import { CexyWebSocket, CexyWebSocketError, type SubscribeResult } from "../src/index.js";
+import { loadJson } from "./helpers.js";
 import { frames, startFakeServer } from "./ws-server.js";
 
 type Server = Awaited<ReturnType<typeof startFakeServer>>;
@@ -53,15 +54,15 @@ describe("subscribe(): refusals are collected per request", () => {
     expect(subs(0)).toHaveLength(1); // not retried
   });
 
-  it("canonical names in the ack (normalised spot symbols) are not mistaken for refusals", async () => {
+  it("canonical names in the ack (btc_usdt -> BTC/USDT) are not mistaken for refusals", async () => {
     const { srv, ws } = await setup();
-    const p = ws.subscribe(["ticker:btc/usdt", "ticker:X/USDT"]);
+    const p = ws.subscribe(["ticker:btc_usdt", "ticker:X/USDT"]);
     const s = await lastSub(0, 1);
     srv.conns[0]!.send({ type: "error", code: "NOT_FOUND", message: "Market not found", id: s.id });
     srv.conns[0]!.send({ type: "subscribed", channels: ["ticker:BTC/USDT"], id: s.id });
     const r = await p;
     expect(r.rejected.map((x) => x.channel)).toEqual(["ticker:X/USDT"]);
-    expect(ws.channels).toEqual(["ticker:btc/usdt"]);
+    expect(ws.channels).toEqual(["ticker:btc_usdt"]);
   });
 
   it("every channel refused: completes on the last error (no ack follows) and rejects; nothing held", async () => {
@@ -133,5 +134,77 @@ describe("re-subscribe refusals", () => {
     expect(errors).toEqual(["FORBIDDEN"]);
     expect(ws.channels).toEqual(["balances"]);
     expect(ws.pendingPrivateChannels).toEqual([]);
+  });
+});
+
+interface RefusalCase {
+  id: string;
+  send?: string[];
+  concurrent?: { request: string; send: string[] }[];
+  server: any[];
+  expect: any;
+}
+const R = loadJson<{ cases: RefusalCase[] }>("conformance/ws/subscribe_refusals.json");
+
+/** What a subscribe() call produced, in the conformance file's terms. */
+async function outcome(p: Promise<SubscribeResult>) {
+  try {
+    const r = await p;
+    return { added: r.added, refused: Object.fromEntries(r.rejected.map((x) => [x.channel, x.error.code])), fails: false, error: null };
+  } catch (e) {
+    const err = e as CexyWebSocketError;
+    return { added: [], refused: Object.fromEntries(err.rejected.map((x) => [x.channel, x.error.code])), fails: true, error: err };
+  }
+}
+
+describe("conformance/ws/subscribe_refusals.json", () => {
+  it("has the cases this suite knows how to run", () => {
+    expect(R.cases.map((c) => c.id)).toEqual([
+      "partly_refused_spot_batch",
+      "spot_canonicalised_in_ack",
+      "futures_coin_case_sensitive",
+      "all_refused_no_ack",
+      "limit_stop_last_error_covers_rest",
+      "error_for_other_request_not_misattributed",
+      "timeout_without_answer",
+    ]);
+  });
+
+  it.each(R.cases.map((c) => [c.id, c] as const))("%s", async (_id, c) => {
+    const timeoutCase = c.expect.error_code === "TIMEOUT";
+    // A long ack timeout: completing before it (all refused, no ack) must not depend on it.
+    const { srv, ws } = await setup(timeoutCase ? 80 : 60_000);
+    const conn = srv.conns[0]!;
+    const requests = c.concurrent ?? [{ request: "r", send: c.send! }];
+    const calls = requests.map((r) => outcome(ws.subscribe(r.send)));
+    await srv.until(() => subs(0).length === requests.length, "subscribe frames");
+    // Spot and futures channels alike go in one frame per call, as given.
+    expect(subs(0).map((m) => m.channels)).toEqual(requests.map((r) => r.send));
+    const idOf = Object.fromEntries(requests.map((r, i) => [r.request, subs(0)[i].id]));
+    for (const step of c.server) {
+      if (step.to) conn.send({ ...step.frame, id: idOf[step.to] });
+      else conn.send({ ...step, id: idOf["r"] });
+    }
+    const results = await Promise.all(calls);
+
+    if (timeoutCase) {
+      expect(results[0]!.error?.code).toBe("TIMEOUT");
+      expect(ws.channels).toEqual(c.expect.held_after);
+      return;
+    }
+    const expected = c.concurrent ? requests.map((r) => c.expect[r.request]) : [c.expect];
+    results.forEach((got, i) => {
+      const want = expected[i];
+      expect(got.fails, requests[i]!.request).toBe(want.fails);
+      expect(got.added).toEqual(want.added);
+      expect(got.refused).toEqual(want.refused);
+      if (got.fails) expect(got.error?.channels).toEqual(Object.keys(want.refused));
+    });
+    // Refused channels are not held; accepted ones are.
+    const refused = new Set(expected.flatMap((w) => Object.keys(w.refused)));
+    const sent = requests.flatMap((r) => r.send);
+    expect(ws.channels.sort()).toEqual(sent.filter((ch) => !refused.has(ch)).sort());
+    await ws.ping();
+    expect(subs(0)).toHaveLength(requests.length); // nothing retried
   });
 });

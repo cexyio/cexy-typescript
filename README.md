@@ -374,9 +374,9 @@ ws.on("resync", (reason, channel) => {
   `"futures_resync"` and the channel: refetch that channel over REST. **On `futures.account` the client also
   unsubscribes and subscribes again by itself** (the server's account updates stopped); if that subscribe is
   refused (e.g. `NOT_FOUND` "No futures account") it emits `error` and stops holding the channel.
-- Each futures channel is subscribed in a request of its own, so a refusal (`RATE_LIMITED`, `NOT_FOUND`,
-  `VALIDATION_FAILED`, `SERVICE_UNAVAILABLE`) is tied to its channel (`rejected`, or `err.channels` when
-  everything was refused). A refused channel is not held and **not retried automatically**: error frames
+- A refusal (`RATE_LIMITED`, `NOT_FOUND`, `VALIDATION_FAILED`, `SERVICE_UNAVAILABLE`) is tied to its
+  channel like any other (`rejected`, or `err.channels` when everything was refused); futures names are
+  matched exactly. A refused channel is not held and **not retried automatically**: error frames
   carry no retry hint, so wait before trying again (about 60 s after `RATE_LIMITED`).
 - The client pings every 30 s (`pingIntervalMs` may not exceed 60 s; the server closes connections silent
   for 90 s or more).

@@ -196,25 +196,24 @@ describe("futures WebSocket behaviour", () => {
     expect(() => new CexyWebSocket({ pingIntervalMs: MAX_PING_INTERVAL_MS + 1 })).toThrow(expect.objectContaining({ code: "CONFIG" }));
   });
 
-  it("each futures channel goes in a request of its own: a partial refusal resolves and names its channel", async () => {
+  it("futures and spot channels go in one frame; a refused futures coin is attributed exactly (case-sensitive)", async () => {
     const { srv, ws } = await connect();
     const conn = srv.conns[0]!;
-    const p = ws.subscribe(["ticker:BTC/USDT", "futures.orderbook:BTC", "futures.orderbook:btc"]).catch((e: unknown) => e);
-    await srv.until(() => conn.received.filter((m) => m.op === "subscribe").length === 3, "three subscribes");
+    const p = ws.subscribe(["ticker:BTC/USDT", "futures.orderbook:BTC", "futures.orderbook:btc"]);
+    await srv.until(() => conn.received.some((m) => m.op === "subscribe"), "subscribe");
     const subs = conn.received.filter((m) => m.op === "subscribe");
-    expect(subs.map((m) => m.channels)).toEqual([["ticker:BTC/USDT"], ["futures.orderbook:BTC"], ["futures.orderbook:btc"]]);
-    conn.send({ type: "subscribed", channels: ["ticker:BTC/USDT"], id: subs[0].id });
-    conn.send({ type: "subscribed", channels: ["futures.orderbook:BTC"], id: subs[1].id });
-    conn.send({ type: "error", code: "NOT_FOUND", message: "Futures market not found", id: subs[2].id }); // no ack follows
-    const res = (await p) as SubscribeResult;
-    expect(res.added.sort()).toEqual(["futures.orderbook:BTC", "ticker:BTC/USDT"]);
+    expect(subs.map((m) => m.channels)).toEqual([["ticker:BTC/USDT", "futures.orderbook:BTC", "futures.orderbook:btc"]]);
+    conn.send({ type: "error", code: "NOT_FOUND", message: "Futures market not found", id: subs[0].id }); // before the ack
+    conn.send({ type: "subscribed", channels: ["ticker:BTC/USDT", "futures.orderbook:BTC"], id: subs[0].id });
+    const res: SubscribeResult = await p;
+    expect(res.added).toEqual(["ticker:BTC/USDT", "futures.orderbook:BTC"]);
     expect(res.rejected).toHaveLength(1);
     expect(res.rejected[0]!.channel).toBe("futures.orderbook:btc");
     expect(res.rejected[0]!.error).toBeInstanceOf(CexyWebSocketError);
     expect(res.rejected[0]!.error).toMatchObject({ code: "NOT_FOUND", fromServer: true, channels: ["futures.orderbook:btc"] });
     expect(ws.channels.sort()).toEqual(["futures.orderbook:BTC", "ticker:BTC/USDT"]);
     await ws.ping();
-    expect(conn.received.filter((m) => m.op === "subscribe")).toHaveLength(3); // not retried
+    expect(conn.received.filter((m) => m.op === "subscribe")).toHaveLength(1); // not retried
   });
 
   it("futures.account subscribed before auth is sent once authKey() succeeds; public futures resync is not resubscribed", async () => {
