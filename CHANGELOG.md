@@ -59,6 +59,11 @@ All notable changes to this project are documented here. The format follows
   spelling of a channel already held) are sent once, first spelling kept. Shared conformance cases
   `channel_kind_is_exact`, `same_channel_two_spellings_acked_twice`, `event_before_ack_is_delivered`,
   `idless_error_not_attributed`.
+- WebSocket held channel names (spec 6cea8f0, rule 13): an accepted channel is now held, reported in
+  `added` and re-sent after a reconnect under the server's canonical name from the ack
+  (`ticker:btc_usdt` is held as `ticker:BTC/USDT`), so `channels` matches event channels. It was held
+  as spelled by the caller. `unsubscribe()` finds a held channel by any spelling the server
+  canonicalises alike, and `added` lists each ack name once.
 - `baseUrl` trailing slashes are stripped in linear time (a `/\/+$/` regex was polynomial on a long run
   of slashes; code-scanning alert js/polynomial-redos).
 

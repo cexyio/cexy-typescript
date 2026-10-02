@@ -62,7 +62,28 @@ describe("subscribe(): refusals are collected per request", () => {
     srv.conns[0]!.send({ type: "subscribed", channels: ["ticker:BTC/USDT"], id: s.id });
     const r = await p;
     expect(r.rejected.map((x) => x.channel)).toEqual(["ticker:X/USDT"]);
-    expect(ws.channels).toEqual(["ticker:btc_usdt"]);
+    expect(ws.channels).toEqual(["ticker:BTC/USDT"]); // held under the ack's canonical name
+  });
+
+  it("an accepted channel is held, re-sent and unsubscribed under the ack's canonical name", async () => {
+    const { srv, ws } = await setup();
+    const p = ws.subscribe(["ticker:eth_usdt"]);
+    const s0 = await lastSub(0, 1);
+    srv.conns[0]!.send({ type: "subscribed", channels: ["ticker:ETH/USDT"], id: s0.id });
+    expect((await p).added).toEqual(["ticker:ETH/USDT"]);
+    expect(ws.channels).toEqual(["ticker:ETH/USDT"]);
+    srv.conns[0]!.socket.terminate();
+    await srv.until(() => srv.conns.length === 2, "reconnect");
+    const s1 = await lastSub(1, 1);
+    expect(s1.channels).toEqual(["ticker:ETH/USDT"]);
+    srv.conns[1]!.send({ type: "subscribed", channels: ["ticker:ETH/USDT"], id: s1.id });
+    const u = ws.unsubscribe(["ticker:eth_usdt"]); // any spelling finds the held name
+    await srv.until(() => srv.conns[1]!.received.some((m) => m.op === "unsubscribe"), "unsubscribe");
+    const un = srv.conns[1]!.received.find((m) => m.op === "unsubscribe");
+    expect(un.channels).toEqual(["ticker:ETH/USDT"]);
+    srv.conns[1]!.send({ type: "unsubscribed", channels: ["ticker:ETH/USDT"], id: un.id });
+    await u;
+    expect(ws.channels).toEqual([]);
   });
 
   it("channel kinds match exactly: Ticker:BTC/USDT is not a spelling of ticker:BTC/USDT", async () => {
@@ -238,11 +259,11 @@ describe("conformance/ws/subscribe_refusals.json", () => {
       expect(got.refused).toEqual(want.refused);
       if (got.fails) expect(got.error?.channels).toEqual(Object.keys(want.refused));
     });
-    // Refused channels are not held; accepted ones are (compared by canonical name).
+    // Refused channels are not held; accepted ones are, under the ack's canonical name.
     const refused = new Set(expected.flatMap((w) => Object.keys(w.refused)));
     const sent = requests.flatMap((r) => dedup(r.send));
-    expect(ws.channels.sort()).toEqual(sent.filter((ch) => !refused.has(ch)).sort());
-    if (c.expect.held_after) expect(ws.channels.map(canonicalChannel)).toEqual(c.expect.held_after);
+    expect(ws.channels.sort()).toEqual(sent.filter((ch) => !refused.has(ch)).map(canonicalChannel).sort());
+    if (c.expect.held_after) expect(ws.channels).toEqual(c.expect.held_after);
     if (c.expect.events_delivered) expect(events).toEqual(c.expect.events_delivered);
     await ws.ping();
     expect(subs(0)).toHaveLength(requests.length); // nothing retried

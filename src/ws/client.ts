@@ -609,11 +609,15 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
    * without one); rejects on an `error` with the request id.
    */
   async unsubscribe(channels: string[]): Promise<void> {
-    for (const c of channels) {
-      this.#pendingPrivate.delete(c);
+    // Any spelling the server canonicalises alike (`ticker:btc_usdt`) finds the held name.
+    const keys = new Set(channels.map(canonicalChannel));
+    const match = (c: string) => keys.has(canonicalChannel(c));
+    for (const c of [...this.#pendingPrivate]) if (match(c)) this.#pendingPrivate.delete(c);
+    const held = [...this.#channels].filter(match);
+    for (const c of held) {
+      this.#channels.delete(c);
       this.#resetSeq(c);
     }
-    const held = [...new Set(channels)].filter((c) => this.#channels.delete(c));
     if (held.length && this.connected) await this.#request("unsubscribe", { channels: held }, held, false);
   }
 
@@ -1157,8 +1161,13 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   ): Promise<{ added: string[]; rejected: SubscribeRejection[]; failure?: unknown }> {
     try {
       const r = await this.#sendSubscribe(channels);
+      // An accepted channel is held under the server's canonical name from the ack (rule 13).
+      if (r.renamed.size) {
+        const next = [...this.#channels].map((c) => r.renamed.get(c) ?? c);
+        this.#channels = new Set(next);
+      }
       for (const x of r.rejected) onRejected(x);
-      return r;
+      return { added: r.added, rejected: r.rejected };
     } catch (err) {
       return { added: [], rejected: [], failure: err };
     }
@@ -1204,32 +1213,39 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
    * refused), or once every channel was refused, or on the ack timeout (with error frames: all
    * refused; without: rejects TIMEOUT).
    */
-  async #sendSubscribe(channels: string[]): Promise<{ added: string[]; rejected: SubscribeRejection[] }> {
+  async #sendSubscribe(
+    channels: string[],
+  ): Promise<{ added: string[]; rejected: SubscribeRejection[]; renamed: Map<string, string> }> {
     const errors: CexyWebSocketError[] = [];
     const ack = await this.#request("subscribe", { channels }, channels, true, errors);
     const raw = ack?.["channels"];
-    const added = Array.isArray(raw) ? raw.filter((c): c is string => typeof c === "string") : [];
-    if (errors.length === 0) return { added, rejected: [] };
+    const acks = Array.isArray(raw) ? raw.filter((c): c is string => typeof c === "string") : [];
+    const added = [...new Set(acks)];
     // The ack lists the accepted channels by canonical name (spot symbols are normalised, futures
     // coins are not); the others were refused, one error frame each, in the order sent.
     // Matched as a multiset: the ack can repeat a name (a channel already held, or two spellings).
-    const acked = new Map<string, number>();
-    for (const c of added) acked.set(canonicalChannel(c), (acked.get(canonicalChannel(c)) ?? 0) + 1);
+    // `renamed` maps a sent spelling to the ack name it is held under.
+    const acked = new Map<string, string[]>();
+    for (const c of acks) {
+      const k = canonicalChannel(c);
+      acked.set(k, [...(acked.get(k) ?? []), c]);
+    }
+    const renamed = new Map<string, string>();
     const missing = ack
       ? channels.filter((c) => {
-          const k = canonicalChannel(c);
-          const n = acked.get(k) ?? 0;
-          if (n > 0) acked.set(k, n - 1);
-          return n === 0;
+          const name = acked.get(canonicalChannel(c))?.shift();
+          if (name !== undefined && name !== c) renamed.set(c, name);
+          return name === undefined;
         })
       : channels;
+    if (errors.length === 0) return { added, rejected: [], renamed };
     const rejected: SubscribeRejection[] = [];
     missing.forEach((channel, i) => {
       const e = errors[Math.min(i, errors.length - 1)];
       if (e) rejected.push({ channel, error: new CexyWebSocketError(e.code, e.message, true, [channel]) });
     });
     if (rejected.length === 0) this.#logger.warn(`subscribe: ${errors.length} error(s) but every channel was acknowledged`);
-    return { added, rejected };
+    return { added, rejected, renamed };
   }
 
   #send(frame: Record<string, unknown>): void {
