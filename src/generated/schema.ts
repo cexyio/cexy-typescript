@@ -307,6 +307,168 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/futures/fills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The caller's futures fills, newest first, 30 days back. */
+        get: operations["fills"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/futures/funding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The caller's futures funding payments, newest first, 30 days back. */
+        get: operations["funding"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/futures/markets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every listed futures market, with its current figures.
+         * @description Public. Read from the futures provider at most every few seconds for everyone; `stale` says when what is served is older than it should be.
+         */
+        get: operations["markets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/futures/markets/{coin}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One futures market. */
+        get: operations["market"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/futures/markets/{coin}/candles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A futures market's candles, 500 at a time in fixed windows. */
+        get: operations["candles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/futures/markets/{coin}/orderbook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A futures market's book.
+         * @description From the live feed: the first request for a market opens it, and it stays open a minute after the last reader. `stale` is the feed's health, not the book's age; a quiet book can be unchanged and current.
+         */
+        get: operations["orderbook"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/futures/markets/{coin}/trades": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A futures market's recent public trades: side, price, size and time only.
+         * @description From the live feed's last 100. The first request for a market opens the feed, so it may return few or none, marked `stale`.
+         */
+        get: operations["trades"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/futures/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The caller's open futures orders. */
+        get: operations["open_orders"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/futures/positions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The caller's futures margin summary and open positions. */
+        get: operations["positions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/markets": {
         parameters: {
             query?: never;
@@ -923,6 +1085,29 @@ export interface components {
             /** @description The order. */
             order_id: string;
         };
+        /** @description One candle. */
+        Candle: {
+            close: components["schemas"]["Amount"];
+            /**
+             * Format: int64
+             * @description Close time, unix milliseconds.
+             */
+            close_time: number;
+            high: components["schemas"]["Amount"];
+            low: components["schemas"]["Amount"];
+            open: components["schemas"]["Amount"];
+            /**
+             * Format: int64
+             * @description Open time, unix milliseconds.
+             */
+            open_time: number;
+            /**
+             * Format: int64
+             * @description Number of trades.
+             */
+            trades: number;
+            volume: components["schemas"]["Amount"];
+        };
         /**
          * @description Candle/kline intervals for market data.
          * @enum {string}
@@ -1146,6 +1331,29 @@ export interface components {
              */
             tier: number;
         };
+        /** @description One fill. */
+        Fill: {
+            closed_pnl: components["schemas"]["Amount"];
+            /** @description Coin. */
+            coin: string;
+            /** @description The provider's description of the fill's effect (`Open Long`, `Close Short`, ...). */
+            direction: string;
+            /** @description Our id for it. */
+            id: string;
+            /** @description Our id for its order. */
+            order_id: string;
+            price: components["schemas"]["Amount"];
+            /** @description `buy` or `sell`. */
+            side: string;
+            size: components["schemas"]["Amount"];
+            /** @description Whether this fill took liquidity. */
+            taker: boolean;
+            /**
+             * Format: int64
+             * @description When, unix milliseconds.
+             */
+            time: number;
+        };
         /** @description One of the caller's executions. */
         FillResponse: {
             fee: components["schemas"]["Amount"];
@@ -1167,6 +1375,128 @@ export interface components {
             timestamp: string;
             /** @description Trade id. */
             trade_id: string;
+        };
+        /** @description One funding payment. */
+        Funding: {
+            amount: components["schemas"]["Amount"];
+            /** @description Coin. */
+            coin: string;
+            position_size: components["schemas"]["Amount"];
+            rate: components["schemas"]["Amount"];
+            /**
+             * Format: int64
+             * @description When, unix milliseconds.
+             */
+            time: number;
+        };
+        /** @description A futures market's book. */
+        FuturesBookResponse: {
+            /**
+             * Format: date-time
+             * @description When the provider last sent it.
+             */
+            as_of: string;
+            /** @description Asks, best first. */
+            asks: components["schemas"]["Level"][];
+            /** @description Bids, best first. */
+            bids: components["schemas"]["Level"][];
+            /** @description Coin. */
+            coin: string;
+            /** @description The live feed is not healthy: the book may be out of date. */
+            stale: boolean;
+        };
+        /** @description A futures market's candles. */
+        FuturesCandlesResponse: {
+            /**
+             * Format: date-time
+             * @description When read.
+             */
+            as_of: string;
+            /** @description Candles, oldest first. */
+            candles: components["schemas"]["Candle"][];
+            /** @description Coin. */
+            coin: string;
+            /** @description Interval. */
+            interval: string;
+            /** @description Older than it should be. */
+            stale: boolean;
+        };
+        /** @description A page of the account's fills. */
+        FuturesFillsResponse: {
+            /** @description Newest first; fills sharing a millisecond in a fixed order. A page may be short of 100 and still be followed by more. */
+            fills: components["schemas"]["Fill"][];
+            /** @description Whether the account has a futures account. */
+            has_account: boolean;
+            /** @description Pass as `cursor` for older fills, exactly as given; `null` at the end (30 days back). Opaque: it may carry more than a time. */
+            next_cursor?: string | null;
+        };
+        /** @description A page of the account's funding payments. */
+        FuturesFundingResponse: {
+            /** @description Newest first. */
+            funding: components["schemas"]["Funding"][];
+            /** @description Whether the account has a futures account. */
+            has_account: boolean;
+            /** @description Pass as `cursor` for older payments, exactly as given; `null` at the end (30 days back). Opaque. */
+            next_cursor?: string | null;
+        };
+        /** @description One futures market. */
+        FuturesMarketResponse: {
+            /**
+             * Format: date-time
+             * @description When this data was read.
+             */
+            as_of: string;
+            market: components["schemas"]["PerpMarket"];
+            /** @description Older than it should be. */
+            stale: boolean;
+        };
+        /** @description Every listed futures market. */
+        FuturesMarketsResponse: {
+            /**
+             * Format: date-time
+             * @description When this data was read from the futures provider.
+             */
+            as_of: string;
+            /** @description The markets, in the provider's order. Delisted markets are not included. */
+            markets: components["schemas"]["PerpMarket"][];
+            /** @description The data is older than it should be: the provider could not be read just now. */
+            stale: boolean;
+        };
+        /** @description The account's open orders. */
+        FuturesOpenOrdersResponse: {
+            /**
+             * Format: date-time
+             * @description When read.
+             */
+            as_of?: string | null;
+            /** @description Whether the account has a futures account. */
+            has_account: boolean;
+            /** @description The open orders. */
+            orders: components["schemas"]["OpenOrder"][];
+            /** @description Older than it should be. */
+            stale: boolean;
+        };
+        /** @description The account's positions. */
+        FuturesPositionsResponse: {
+            /**
+             * Format: date-time
+             * @description When read.
+             */
+            as_of?: string | null;
+            /** @description Whether the account has a futures account. Without one, nothing else is meaningful. */
+            has_account: boolean;
+            positions?: components["schemas"]["Positions"] | null;
+            /** @description Older than it should be. */
+            stale: boolean;
+        };
+        /** @description A futures market's recent public trades. */
+        FuturesTradesResponse: {
+            /** @description Coin. */
+            coin: string;
+            /** @description The live feed is not healthy, or was only just opened: trades may be missing. */
+            stale: boolean;
+            /** @description Newest first. */
+            trades: components["schemas"]["PublicTrade"][];
         };
         /**
          * @description Unique identifier of a futures collateral transfer.
@@ -1266,6 +1596,11 @@ export interface components {
             cause: string;
             /** @enum {string} */
             type: "system";
+        };
+        /** @description One price level. */
+        Level: {
+            price: components["schemas"]["Amount"];
+            size: components["schemas"]["Amount"];
         };
         /**
          * @description Whether a fill added liquidity (maker) or removed it (taker).
@@ -1405,6 +1740,28 @@ export interface components {
             /** @description Short heading. */
             title: string;
         };
+        /** @description One open order. */
+        OpenOrder: {
+            /** @description Coin. */
+            coin: string;
+            /** @description Our id for it, stable across reads. */
+            id: string;
+            /** @description The order type as the provider names it (`Limit`, `Stop Market`, ...). */
+            order_type: string;
+            original_size: components["schemas"]["Amount"];
+            /**
+             * Format: int64
+             * @description When placed, unix milliseconds.
+             */
+            placed_at: number;
+            price: components["schemas"]["Amount"];
+            /** @description Whether it may only reduce a position. */
+            reduce_only: boolean;
+            /** @description `buy` or `sell`. */
+            side: string;
+            size: components["schemas"]["Amount"];
+            trigger_price?: components["schemas"]["Amount"] | null;
+        };
         /** @description One side of the order book, aggregated by price. */
         OrderBookResponse: {
             /** @description Asks, best first. */
@@ -1505,6 +1862,28 @@ export interface components {
             /** @description Minimum length in characters. */
             min_length: number;
         };
+        /** @description One listed perpetual market and its current figures. */
+        PerpMarket: {
+            /** @description The provider's coin name, e.g. `BTC` or `kPEPE`. */
+            coin: string;
+            funding_rate: components["schemas"]["Amount"];
+            mark_price: components["schemas"]["Amount"];
+            /**
+             * Format: int32
+             * @description The highest leverage allowed.
+             */
+            max_leverage: number;
+            mid_price?: components["schemas"]["Amount"] | null;
+            open_interest: components["schemas"]["Amount"];
+            oracle_price: components["schemas"]["Amount"];
+            price_24h_ago: components["schemas"]["Amount"];
+            /**
+             * Format: int32
+             * @description Decimal places a size may have.
+             */
+            size_decimals: number;
+            volume_24h: components["schemas"]["Amount"];
+        };
         /**
          * @description Places an order.
          *
@@ -1574,6 +1953,47 @@ export interface components {
          * @enum {string}
          */
         PoolStatus: "active" | "paused" | "closing";
+        /** @description One open position. */
+        Position: {
+            /** @description Coin. */
+            coin: string;
+            entry_price?: components["schemas"]["Amount"] | null;
+            funding_since_open: components["schemas"]["Amount"];
+            /**
+             * Format: int32
+             * @description Leverage.
+             */
+            leverage: number;
+            /** @description `cross` or `isolated`. */
+            leverage_type: string;
+            liquidation_price?: components["schemas"]["Amount"] | null;
+            margin_used: components["schemas"]["Amount"];
+            position_value: components["schemas"]["Amount"];
+            return_on_equity: components["schemas"]["Amount"];
+            size: components["schemas"]["Amount"];
+            unrealized_pnl: components["schemas"]["Amount"];
+        };
+        /** @description A margin summary and the open positions. */
+        Positions: {
+            account_value: components["schemas"]["Amount"];
+            maintenance_margin: components["schemas"]["Amount"];
+            margin_used: components["schemas"]["Amount"];
+            /** @description The open positions. */
+            positions: components["schemas"]["Position"][];
+            total_notional: components["schemas"]["Amount"];
+        };
+        /** @description A public trade, with nothing that identifies the parties. */
+        PublicTrade: {
+            price: components["schemas"]["Amount"];
+            /** @description `buy` or `sell`: the taker's side. */
+            side: string;
+            size: components["schemas"]["Amount"];
+            /**
+             * Format: int64
+             * @description When, unix milliseconds.
+             */
+            time: number;
+        };
         /**
          * @description A public trade.
          *
@@ -2265,6 +2685,413 @@ export interface operations {
                     "application/json": {
                         data: components["schemas"]["FeeScheduleResponse"][];
                     };
+                };
+            };
+        };
+    };
+    fills: {
+        parameters: {
+            query?: {
+                /** @description The `next_cursor` of the previous page, as given; absent for the newest. A unix time in milliseconds is also accepted: rows older than it. */
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of fills */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["FuturesFillsResponse"];
+                    };
+                };
+            };
+            /** @description Too many reads for this account */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Could not be read right now (retryable) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    funding: {
+        parameters: {
+            query?: {
+                /** @description The `next_cursor` of the previous page, as given; absent for the newest. A unix time in milliseconds is also accepted: rows older than it. */
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of funding payments */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["FuturesFundingResponse"];
+                    };
+                };
+            };
+            /** @description Too many reads for this account */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Could not be read right now (retryable) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    markets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The markets */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["FuturesMarketsResponse"];
+                    };
+                };
+            };
+            /** @description Futures market data cannot be read right now (retryable) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    market: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The market's coin, e.g. `BTC` */
+                coin: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The market */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["FuturesMarketResponse"];
+                    };
+                };
+            };
+            /** @description No such futures market */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Futures market data cannot be read right now (retryable) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    candles: {
+        parameters: {
+            query: {
+                /** @description Unix milliseconds: the window of 500 candles holding this time. Absent: the latest 500. */
+                before?: number | null;
+                /** @description `1m`, `5m`, `15m`, `1h`, `4h` or `1d`. */
+                interval: string;
+            };
+            header?: never;
+            path: {
+                /** @description The market's coin */
+                coin: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The candles */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["FuturesCandlesResponse"];
+                    };
+                };
+            };
+            /** @description An interval or time not served */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description No such futures market */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too many futures data requests from this address */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The candles could not be read right now (retryable) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    orderbook: {
+        parameters: {
+            query?: {
+                /** @description Levels per side, 1 to 20 (default 20). */
+                depth?: number | null;
+            };
+            header?: never;
+            path: {
+                /** @description The market's coin */
+                coin: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The book */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["FuturesBookResponse"];
+                    };
+                };
+            };
+            /** @description No such futures market */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too many new market feeds from this address */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The book could not be read right now (retryable) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    trades: {
+        parameters: {
+            query?: {
+                /** @description 1 to 100 (default 50). */
+                limit?: number | null;
+            };
+            header?: never;
+            path: {
+                /** @description The market's coin */
+                coin: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The trades */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["FuturesTradesResponse"];
+                    };
+                };
+            };
+            /** @description No such futures market */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too many new market feeds from this address */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    open_orders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Open orders */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["FuturesOpenOrdersResponse"];
+                    };
+                };
+            };
+            /** @description Too many reads for this account */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Could not be read right now (retryable) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    positions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Positions, or `has_account: false` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["FuturesPositionsResponse"];
+                    };
+                };
+            };
+            /** @description Too many reads for this account */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Could not be read right now (retryable) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

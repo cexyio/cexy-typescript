@@ -8,6 +8,7 @@ import {
   CexyError,
   CexyTimeoutError,
   MAX_SERVER_WAIT_MS,
+  PagingStalledError,
   RateLimitError,
   errorFromResponse,
 } from "./errors.js";
@@ -324,12 +325,12 @@ export function serverHintMs(err: unknown): number | null {
 }
 
 /**
- * Retryable = a network failure/timeout, or an API error with `retryable: true` (incl. 409
- * CONCURRENT_MODIFICATION). A 4xx is never retryable except 429 and 409 CONCURRENT_MODIFICATION,
+ * Retryable = a network failure/timeout, a `PagingStalledError`, or an API error with
+ * `retryable: true` (incl. 409 CONCURRENT_MODIFICATION). A 4xx is never retryable except 429 and 409 CONCURRENT_MODIFICATION,
  * whatever its body says.
  */
 export function isRetryable(err: unknown): boolean {
-  if (err instanceof CexyConnectionError) return true;
+  if (err instanceof CexyConnectionError || err instanceof PagingStalledError) return true;
   if (err instanceof CexyApiError) {
     const concurrent = err.code === "CONCURRENT_MODIFICATION";
     if (err.status >= 400 && err.status < 500 && err.status !== 429 && !(err.status === 409 && concurrent)) return false;

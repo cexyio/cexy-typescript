@@ -10,6 +10,8 @@ import {
   MAX_SERVER_WAIT_MS,
   NotFoundError,
   OrderStateUnknownError,
+  PagingCursorRepeatedError,
+  PagingStalledError,
   RateLimitError,
 } from "./errors.js";
 import { isAmbiguous, isRetryable, newId, type CallSpec, type RequestOptions, type Transport } from "./http.js";
@@ -30,6 +32,17 @@ import type {
   ExitPoolResult,
   FeeSchedule,
   Fill,
+  Funding,
+  FuturesBook,
+  FuturesCandles,
+  FuturesFill,
+  FuturesFills,
+  FuturesFunding,
+  FuturesMarket,
+  FuturesMarkets,
+  FuturesOpenOrders,
+  FuturesPositions,
+  FuturesTrades,
   JoinPoolRequest,
   JoinPoolResult,
   LedgerEntry,
@@ -577,5 +590,137 @@ export class TradingResource extends Resource {
       if (waitMs > 0) await this.t.config.sleep(waitMs, opts?.signal);
     }
     return result();
+  }
+}
+
+// ---------------------------------------------------------------------------------------
+// Futures data (read only)
+// ---------------------------------------------------------------------------------------
+
+/** How many times in a row a futures history iterator re-asks a busy page by default. */
+export const FUTURES_PAGING_MAX_RETRIES = 3;
+
+/** Options of `futures.iterateFills()` / `iterateFunding()`. */
+export interface FuturesIterateOptions extends IterateOptions, RequestOptions {
+  /**
+   * How many times in a row to re-ask the same cursor when the server answers an empty page whose
+   * `next_cursor` equals the cursor sent (the provider is busy), waiting the client's normal
+   * backoff before each. Default 3; then `PagingStalledError` (code `PAGING_STALLED`). Independent
+   * of `maxRetries` (a client with request retries off still rides out a busy provider).
+   */
+  maxBusyRetries?: number;
+}
+
+/** What a futures history iterator returns when it ends (the generator's return value). */
+export interface FuturesHistoryEnd {
+  /** False when the account has no futures account (nothing was yielded). */
+  has_account: boolean;
+}
+
+/**
+ * Futures market data (public) and the account's own futures data (an API key with `read`).
+ * Every response carries `stale` (and `as_of` where the data has an age). When nothing usable is
+ * cached and the data cannot be read, the API answers 503 `SERVICE_UNAVAILABLE` (retryable,
+ * `details.reason` `futures_data_unavailable`); the SDK retries it like any retryable error.
+ * Account reads answer `has_account: false` when the account has no futures account.
+ */
+export class FuturesResource extends Resource {
+  /** Every listed futures market and its figures. */
+  markets(opts?: RequestOptions): Promise<FuturesMarkets> {
+    return this.data({ op: "markets" }, opts);
+  }
+  /** One futures market, by coin (e.g. `"BTC"`). */
+  market(coin: string, opts?: RequestOptions): Promise<FuturesMarket> {
+    return this.data({ op: "market", pathParams: { coin } }, opts);
+  }
+  /** The book, up to 20 levels a side. `stale` is the live feed's health, not the book's age. */
+  orderBook(coin: string, params?: Q<"orderbook">, opts?: RequestOptions): Promise<FuturesBook> {
+    return this.data({ op: "orderbook", pathParams: { coin }, query: params }, opts);
+  }
+  /** Candles (oldest first): the latest, or the window holding `before` (unix ms). */
+  candles(coin: string, params: Q<"candles">, opts?: RequestOptions): Promise<FuturesCandles> {
+    return this.data({ op: "candles", pathParams: { coin }, query: params }, opts);
+  }
+  /** Recent public trades (newest first, at most 100). */
+  trades(coin: string, params?: Q<"trades">, opts?: RequestOptions): Promise<FuturesTrades> {
+    return this.data({ op: "trades", pathParams: { coin }, query: params }, opts);
+  }
+  /** The account's margin summary and open positions. */
+  positions(opts?: RequestOptions): Promise<FuturesPositions> {
+    return this.data({ op: "positions" }, opts);
+  }
+  /** The account's open futures orders. */
+  openOrders(opts?: RequestOptions): Promise<FuturesOpenOrders> {
+    return this.data({ op: "open_orders" }, opts);
+  }
+  /**
+   * One page of the account's fills, newest first, 30 days back. A page may be short (even empty)
+   * and still have a `next_cursor`: keep paging until it is null, passing it back exactly as given.
+   * `iterateFills()` does that, including the busy-provider rule.
+   */
+  fills(params?: Q<"fills">, opts?: RequestOptions): Promise<FuturesFills> {
+    return this.data({ op: "fills", query: params }, opts);
+  }
+  /** One page of the account's funding payments; paged like `fills()`. */
+  funding(params?: Q<"funding">, opts?: RequestOptions): Promise<FuturesFunding> {
+    return this.data({ op: "funding", query: params }, opts);
+  }
+  /**
+   * Every fill, newest first (`for await`). Ends when `next_cursor` is null, or at once without a
+   * futures account (the return value says `has_account`). Throws `PagingStalledError`
+   * (retryable) when the provider stays busy; the rows yielded until then are not complete.
+   * Throws `PagingCursorRepeatedError` (not retryable) when a page with rows repeats the cursor.
+   */
+  iterateFills(params?: Q<"fills">, iter?: FuturesIterateOptions): AsyncGenerator<FuturesFill, FuturesHistoryEnd, undefined> {
+    return this.#history("futures.iterateFills", (cursor) => this.fills({ cursor }, iter), (p) => p.fills, params?.cursor, iter);
+  }
+  /** Every funding payment, newest first; the same rules as `iterateFills()`. */
+  iterateFunding(params?: Q<"funding">, iter?: FuturesIterateOptions): AsyncGenerator<Funding, FuturesHistoryEnd, undefined> {
+    return this.#history("futures.iterateFunding", (cursor) => this.funding({ cursor }, iter), (p) => p.funding, params?.cursor, iter);
+  }
+
+  /**
+   * The paging rules of conformance/futures/history_paging.json: the cursor is opaque and sent
+   * back verbatim; short or empty pages go on until `next_cursor` is null; an EMPTY page whose
+   * `next_cursor` equals the cursor just sent means busy: back off and re-ask the same cursor,
+   * at most `maxBusyRetries` times in a row, then fail with `PagingStalledError`; a page WITH rows
+   * that repeats the cursor is a server error: its rows are yielded, then
+   * `PagingCursorRepeatedError` (never loop).
+   */
+  async *#history<P extends { has_account: boolean; next_cursor?: string | null }, T>(
+    name: string,
+    fetchPage: (cursor: string | undefined) => Promise<P>,
+    rows: (page: P) => T[],
+    startCursor: string | null | undefined,
+    iter: FuturesIterateOptions = {},
+  ): AsyncGenerator<T, FuturesHistoryEnd, undefined> {
+    const maxBusy = iter.maxBusyRetries ?? FUTURES_PAGING_MAX_RETRIES;
+    if (!(maxBusy >= 0)) throw new CexyConfigError(`${name}(): maxBusyRetries must be >= 0`);
+    const max = iter.maxItems ?? Infinity;
+    let cursor: string | undefined = startCursor ?? undefined;
+    let yielded = 0;
+    let busy = 0;
+    for (;;) {
+      const page = await fetchPage(cursor);
+      if (!page.has_account) return { has_account: false };
+      const got = rows(page);
+      const items = Array.isArray(got) ? got : [];
+      const next = page.next_cursor ?? null;
+      if (items.length === 0 && cursor !== undefined && next === cursor) {
+        if (busy >= maxBusy) throw new PagingStalledError(name, cursor, busy + 1);
+        await this.t.config.sleep(this.t.retryDelay(busy, null), iter.signal);
+        busy++;
+        continue;
+      }
+      busy = 0;
+      for (const item of items) {
+        if (yielded >= max) return { has_account: true };
+        yield item;
+        yielded++;
+      }
+      if (next === null) return { has_account: true };
+      if (cursor !== undefined && next === cursor) throw new PagingCursorRepeatedError(name, cursor);
+      cursor = next;
+    }
   }
 }

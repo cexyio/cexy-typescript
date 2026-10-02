@@ -142,7 +142,7 @@ describe("subscriptions", () => {
     ws = new CexyWebSocket({ url: srv.url, allowInsecure: true, reconnect: false });
     await ws.connect();
     const r = await ws.subscribe(["ticker:BTC/USDT", "trades:BTC/USDT"]);
-    expect(r).toEqual({ added: ["ticker:BTC/USDT", "trades:BTC/USDT"], refused: [], alreadySubscribed: [] });
+    expect(r).toEqual({ added: ["ticker:BTC/USDT", "trades:BTC/USDT"], refused: [], alreadySubscribed: [], rejected: [] });
     const sub = srv.conns[0]!.received.find((m) => m.op === "subscribe");
     expect(typeof sub.id).toBe("string");
     const again = await ws.subscribe(["ticker:BTC/USDT"]);
@@ -428,7 +428,8 @@ describe("request acknowledgements (id correlation)", () => {
     await srv.until(() => srv!.conns[0]!.received.some((m) => m.op === "subscribe"), "subscribe");
     const id = srv.conns[0]!.received.find((m) => m.op === "subscribe").id;
     srv.conns[0]!.send({ type: "unsubscribed", channels: ["ticker:A/USDT"], id });
-    expect((await p).added).toEqual([]); // timed out leniently instead
+    // Not settled by it: the request times out (no ack and no error frame), which rejects.
+    await expect(p).rejects.toMatchObject({ code: "TIMEOUT" });
   });
 
   it("unsubscribe resolves on `unsubscribed` with its id", async () => {

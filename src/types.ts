@@ -102,6 +102,45 @@ export type WithdrawalAddress = S["WithdrawalAddressResponse"];
 export type Withdrawal = S["WithdrawalResponse"];
 export type WithdrawalStatus = S["WithdrawalStatus"];
 
+// Futures data (read only). Generated names are kept, except where they collide with the spot
+// models above (`Candle`, `Fill`, `PublicTrade`): those get a `Futures` prefix.
+/** One listed perpetual market and its current figures. */
+export type PerpMarket = S["PerpMarket"];
+/** Every listed futures market, with `as_of` and `stale`. */
+export type FuturesMarkets = S["FuturesMarketsResponse"];
+/** One futures market, with `as_of` and `stale`. */
+export type FuturesMarket = S["FuturesMarketResponse"];
+/** A futures order book. `stale` is the live feed's health, not the book's age. */
+export type FuturesBook = S["FuturesBookResponse"];
+/** One price level of a futures book. */
+export type Level = S["Level"];
+/** A futures market's candles (oldest first). */
+export type FuturesCandles = S["FuturesCandlesResponse"];
+/** One futures candle (generated name `Candle`; renamed: `Candle` is the spot candle). */
+export type FuturesCandle = S["Candle"];
+/** A futures market's recent public trades (newest first). */
+export type FuturesTrades = S["FuturesTradesResponse"];
+/** One futures public trade (generated name `PublicTrade`; renamed: `PublicTrade` is spot's). */
+export type FuturesPublicTrade = S["PublicTrade"];
+/** The account's margin summary and positions (`has_account: false` without a futures account). */
+export type FuturesPositions = S["FuturesPositionsResponse"];
+/** A margin summary and the open positions. */
+export type Positions = S["Positions"];
+/** One open futures position. */
+export type Position = S["Position"];
+/** The account's open futures orders. */
+export type FuturesOpenOrders = S["FuturesOpenOrdersResponse"];
+/** One open futures order. */
+export type OpenOrder = S["OpenOrder"];
+/** A page of the account's futures fills. */
+export type FuturesFills = S["FuturesFillsResponse"];
+/** One futures fill (generated name `Fill`; renamed: `Fill` is the spot fill). */
+export type FuturesFill = S["Fill"];
+/** A page of the account's funding payments. */
+export type FuturesFunding = S["FuturesFundingResponse"];
+/** One funding payment. */
+export type Funding = S["Funding"];
+
 /** Query parameters of an operation, from the spec. */
 export type QueryOf<Op extends keyof operations> = NonNullable<operations[Op]["parameters"]["query"]>;
 

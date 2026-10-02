@@ -3,12 +3,14 @@ import { assertSecureUrl } from "../url.js";
 import type { Balance, OrderBook } from "../types.js";
 import { LiveBalances, type LiveBalancesOptions } from "./balances.js";
 import { TypedEmitter } from "./emitter.js";
+import { futuresChannelProblem, futuresCoinProblem, futuresIntervalProblem, isFuturesChannel } from "./futures.js";
 import { LiveOrderBook, type LiveOrderBookOptions } from "./orderbook.js";
 import {
   KNOWN_EVENT_TYPES,
   PRIVATE_CHANNELS,
   SUPPORTED_PROTOCOL_VERSION,
   type ErrorFrame,
+  type FuturesInterval,
   type SessionRevokedEvent,
   type SubscribedFrame,
   type WebSocketConstructor,
@@ -20,18 +22,67 @@ import {
 export const DEFAULT_WS_URL = "wss://api.cexy.io/api/v1/ws";
 const MAX_CHANNEL_LENGTH = 64;
 const OPEN = 1;
+/** Default client ping cadence. */
+export const DEFAULT_PING_INTERVAL_MS = 30_000;
+/**
+ * The longest allowed `pingIntervalMs`: the server closes a connection after 90-120 s without a
+ * frame from the client, so the client pings at least every 60 s.
+ */
+export const MAX_PING_INTERVAL_MS = 60_000;
+const FUTURES_ACCOUNT = "futures.account";
+/** Private channels that subscribe() holds until the connection is authenticated. */
+const HELD_UNTIL_AUTH: ReadonlySet<string> = new Set([FUTURES_ACCOUNT]);
 
 /** A WebSocket protocol error, a server error frame, or a local guard. */
 export class CexyWebSocketError extends CexyError {
   readonly code: string;
   /** True when this came from a server `error` frame (not a local guard or disconnect). */
   readonly fromServer: boolean;
-  constructor(code: string, message: string, fromServer = false) {
+  /** The channels a refused subscribe concerns, when known (refusals: always). */
+  readonly channels: string[];
+  /** When `subscribe()` rejects because every channel was refused: each channel with its own error. */
+  readonly rejected: SubscribeRejection[];
+  constructor(code: string, message: string, fromServer = false, channels: string[] = [], rejected: SubscribeRejection[] = []) {
     super(message);
     this.code = code;
     this.fromServer = fromServer;
+    this.channels = channels;
+    this.rejected = rejected;
   }
 }
+
+function futuresConfig(problem: string | null): void {
+  if (problem !== null) throw new CexyWebSocketError("CONFIG", problem);
+}
+
+/**
+ * Futures channel names. The coin is sent exactly as given (case-sensitive, as
+ * `CexyClient.futures.markets()` lists it: `BTC`, `kPEPE`); an invalid coin or interval throws a
+ * `CONFIG` error locally. Public futures channels send no snapshot on subscribe: seed from REST.
+ */
+export const futuresChannel = {
+  /** Every coin's mid price (`futures.mids` events, the full set each time). */
+  mids: (): string => "futures.mids",
+  /** The complete book of `coin` on every frame (`futures.orderbook.update`). */
+  orderbook(coin: string): string {
+    futuresConfig(futuresCoinProblem(coin));
+    return `futures.orderbook:${coin}`;
+  },
+  /** Public trades of `coin` (`futures.trades.new`). */
+  trades(coin: string): string {
+    futuresConfig(futuresCoinProblem(coin));
+    return `futures.trades:${coin}`;
+  },
+  /** The current candle of `coin` at `interval` (`futures.candle.update`). */
+  candles(coin: string, interval: FuturesInterval): string {
+    futuresConfig(futuresCoinProblem(coin) ?? futuresIntervalProblem(interval));
+    return `futures.candles:${coin}:${interval}`;
+  },
+  /** The server's market-data connection going `live` / `degraded` (only on a change). */
+  status: (): string => "futures.status",
+  /** Private: your positions and open orders, in full (`futures.positions`, `futures.orders`). */
+  account: (): string => FUTURES_ACCOUNT,
+} as const;
 
 const TEARDOWN_CODES: ReadonlySet<string> = new Set(["DISCONNECTED", "CLOSED"]);
 
@@ -99,7 +150,7 @@ export interface CexyWebSocketOptions {
   WebSocket?: WebSocketConstructor;
   /** REST client used for order-book snapshots (`CexyClient.websocket()` sets it). */
   restClient?: SnapshotSource;
-  /** Client ping cadence. Required by the server; default 30000 ms. */
+  /** Client ping cadence. Required by the server; default 30000 ms, at most 60000 ms. */
   pingIntervalMs?: number;
   /** Reconnect if no frame arrives for this long. Default 75000 ms. */
   livenessTimeoutMs?: number;
@@ -134,12 +185,23 @@ export interface CexyWebSocketOptions {
 }
 
 export interface SubscribeResult {
-  /** Channels the server confirmed as newly added. */
+  /** Channels the server confirmed (its `subscribed` acknowledgements). */
   added: string[];
-  /** Channels refused locally because the subscription cap was reached. */
+  /** Channels refused locally because the subscription cap was reached (nothing sent). */
   refused: string[];
   /** Channels already held (nothing sent for them). */
   alreadySubscribed: string[];
+  /**
+   * Channels the server refused (an `error` frame with the request's id), each with its error. They
+   * are not held and not retried. When EVERY channel sent was refused, `subscribe()` rejects instead.
+   */
+  rejected: SubscribeRejection[];
+}
+
+/** A channel the server refused, with the error frame (`error.channels` is `[channel]`). */
+export interface SubscribeRejection {
+  channel: string;
+  error: CexyWebSocketError;
 }
 
 export interface CloseInfo {
@@ -163,7 +225,12 @@ export type ResyncReason =
   /** `deposits.resync` (planned server frame): refetch the deposit list. */
   | "deposits_resync"
   /** `withdrawals.resync` (planned server frame): refetch the withdrawal list. */
-  | "withdrawals_resync";
+  | "withdrawals_resync"
+  /**
+   * `futures.resync` on the channel passed as the second argument: refetch it over REST. On
+   * `futures.account` the client also unsubscribes and subscribes again by itself.
+   */
+  | "futures_resync";
 
 /**
  * Why the server stopped the connection's private subscriptions (see `authChanged`). May grow:
@@ -215,8 +282,11 @@ export interface CexyWebSocketEvents extends Record<string, unknown[]> {
   reconnecting: [{ attempt: number; delayMs: number }];
   /** Reconnected, re-authenticated (if a token was held) and re-subscribed. */
   reconnected: [WelcomeFrame];
-  /** State may have been missed: refetch anything you keep from private or public channels. */
-  resync: [ResyncReason];
+  /**
+   * State may have been missed: refetch anything you keep from private or public channels.
+   * `channel` is set when one channel is concerned (`futures_resync`).
+   */
+  resync: [reason: ResyncReason, channel?: string];
   /**
    * This connection's own session was revoked (`session.revoked` with `current: true`, or
    * the `signed_out` frame with reason `revoked`, delivered as a synthetic event with
@@ -269,6 +339,11 @@ interface Pending {
   resolve: (ack: Record<string, unknown> | null) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  /**
+   * Subscribe only: the error frames with this request's id. The server sends one per refused
+   * channel BEFORE its single `subscribed` ack, and no ack when it refused every channel.
+   */
+  errors?: CexyWebSocketError[];
 }
 
 const defaultLogger: WsLogger = { warn: (m) => console.warn(`[cexy] ${m}`) };
@@ -298,7 +373,12 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   #token: string | null = null;
   /** The user of the last successful auth on the current connection. */
   #authUserId: string | null = null;
-  /** Private channels dropped by a server sign-out, re-subscribed after the next successful auth. */
+  /** The current connection is authenticated (an `authenticated` reply, no sign-out since). */
+  #authed = false;
+  /**
+   * Private channels waiting for the next successful auth (subscribed while signed out, or dropped
+   * by a server sign-out); sent once `auth()`/`authKey()` succeeds.
+   */
   #pendingPrivate = new Set<string>();
   /** Frame-sequence tracking per private channel on the current connection. */
   #seq = new Map<string, SeqState>();
@@ -342,8 +422,12 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     } catch (err) {
       throw new CexyWebSocketError("CONFIG", (err as Error).message);
     }
+    const pingIntervalMs = options.pingIntervalMs ?? DEFAULT_PING_INTERVAL_MS;
+    if (!(pingIntervalMs > 0 && pingIntervalMs <= MAX_PING_INTERVAL_MS)) {
+      throw new CexyWebSocketError("CONFIG", `pingIntervalMs must be > 0 and <= ${MAX_PING_INTERVAL_MS} (the server closes silent connections)`);
+    }
     this.#opts = {
-      pingIntervalMs: options.pingIntervalMs ?? 30_000,
+      pingIntervalMs,
       livenessTimeoutMs: options.livenessTimeoutMs ?? 75_000,
       welcomeTimeoutMs: options.welcomeTimeoutMs ?? 10_000,
       ackTimeoutMs: options.ackTimeoutMs ?? 5_000,
@@ -381,6 +465,11 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   /** Channels currently held (restored after every reconnect). */
   get channels(): string[] {
     return [...this.#channels];
+  }
+
+  /** Private channels held until the next successful `auth()`/`authKey()` (nothing sent yet). */
+  get pendingPrivateChannels(): string[] {
+    return [...this.#pendingPrivate];
   }
 
   /**
@@ -462,34 +551,57 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   /**
    * Subscribes to channels, e.g. `["ticker:BTC/USDT", "trades:BTC/USDT"]`. Resolves when the
    * server confirms. Beyond `maxSubscriptions` channels are refused locally (see `refused`).
+   * `futures.account` is held while the connection is not authenticated and sent after the next
+   * successful `auth()`/`authKey()` (`pendingPrivateChannels`). The channels go in one frame; the
+   * server's refusals are attributed to channels by comparing its ack with what was sent (see
+   * `rejected`). A refused channel is not held and not retried. Rejects only when every channel
+   * sent was refused, or `TIMEOUT` (no ack, no error: the channels stay held) / disconnect.
+   * Futures channel names are checked locally (see `futuresChannel`).
    */
   async subscribe(channels: string[]): Promise<SubscribeResult> {
-    const wanted = [...new Set(channels)];
+    // Two spellings of one channel (`ticker:btc_usdt`, `ticker:BTC/USDT`) are sent once, first spelling kept.
+    const seen = new Set<string>();
+    const wanted: string[] = [];
+    for (const c of channels) {
+      const k = typeof c === "string" ? canonicalChannel(c) : c;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      wanted.push(c);
+    }
     for (const c of wanted) {
       if (typeof c !== "string" || c === "" || c.length > MAX_CHANNEL_LENGTH) {
         throw new CexyWebSocketError("CONFIG", `invalid channel name: ${JSON.stringify(c)}`);
       }
+      if (isFuturesChannel(c)) futuresConfig(futuresChannelProblem(c));
     }
     // Private channels waiting for the next successful auth count as held.
-    const held = (c: string) => this.#channels.has(c) || this.#pendingPrivate.has(c);
+    const heldKeys = new Set([...this.#channels, ...this.#pendingPrivate].map(canonicalChannel));
+    const held = (c: string) => heldKeys.has(canonicalChannel(c));
     const alreadySubscribed = wanted.filter(held);
     const fresh = wanted.filter((c) => !held(c));
     const room = Math.max(0, this.#opts.maxSubscriptions - this.#channels.size - this.#pendingPrivate.size);
     const accepted = fresh.slice(0, room);
     const refused = fresh.slice(room);
     if (refused.length) this.#logger.warn(`subscription cap (${this.#opts.maxSubscriptions}) reached; refused: ${refused.join(", ")}`);
-    if (accepted.length === 0) return { added: [], refused, alreadySubscribed };
-    for (const c of accepted) this.#channels.add(c);
-    if (!this.connected) return { added: [], refused, alreadySubscribed };
-    let added: string[];
-    try {
-      added = await this.#sendSubscribe(accepted);
-    } catch (err) {
-      // Refused by the server (e.g. UNAUTHENTICATED for a private channel): not held.
-      if (err instanceof CexyWebSocketError && err.fromServer) for (const c of accepted) this.#channels.delete(c);
-      throw err;
+    if (accepted.length === 0) return { added: [], refused, alreadySubscribed, rejected: [] };
+    let send = accepted;
+    if (this.connected && !this.#authed) {
+      // futures.account waits for authentication (sent by #onAuthenticated). The older private
+      // channels are sent as before (the server refuses them UNAUTHENTICATED).
+      for (const c of accepted) if (HELD_UNTIL_AUTH.has(c)) this.#pendingPrivate.add(c);
+      send = accepted.filter((c) => !HELD_UNTIL_AUTH.has(c));
     }
-    return { added, refused, alreadySubscribed };
+    for (const c of send) this.#channels.add(c);
+    if (!this.connected || send.length === 0) return { added: [], refused, alreadySubscribed, rejected: [] };
+    // Refused by the server (e.g. UNAUTHENTICATED, or a futures RATE_LIMITED / NOT_FOUND): not held.
+    const r = await this.#subscribeGroups(send, (x) => this.#channels.delete(x.channel));
+    const first = r.rejected[0];
+    if (first && r.rejected.length === send.length) {
+      // Every channel sent was refused.
+      throw new CexyWebSocketError(first.error.code, first.error.message, true, r.rejected.map((x) => x.channel), r.rejected);
+    }
+    if (r.failure !== undefined && r.added.length === 0 && r.rejected.length === 0) throw toError(r.failure);
+    return { added: r.added, refused, alreadySubscribed, rejected: r.rejected };
   }
 
   /**
@@ -497,11 +609,15 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
    * without one); rejects on an `error` with the request id.
    */
   async unsubscribe(channels: string[]): Promise<void> {
-    for (const c of channels) {
-      this.#pendingPrivate.delete(c);
+    // Any spelling the server canonicalises alike (`ticker:btc_usdt`) finds the held name.
+    const keys = new Set(channels.map(canonicalChannel));
+    const match = (c: string) => keys.has(canonicalChannel(c));
+    for (const c of [...this.#pendingPrivate]) if (match(c)) this.#pendingPrivate.delete(c);
+    const held = [...this.#channels].filter(match);
+    for (const c of held) {
+      this.#channels.delete(c);
       this.#resetSeq(c);
     }
-    const held = [...new Set(channels)].filter((c) => this.#channels.delete(c));
     if (held.length && this.connected) await this.#request("unsubscribe", { channels: held }, held, false);
   }
 
@@ -680,6 +796,9 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
       );
     }
     this.#authUserId = null; // a new connection starts signed out
+    this.#authed = false;
+    // futures.account waits for this connection's auth (sent by #onAuthenticated).
+    for (const c of HELD_UNTIL_AUTH) if (this.#channels.delete(c)) this.#pendingPrivate.add(c);
     this.#resetSeq(); // sequences on a new connection are unrelated
     this.#challenge = typeof welcome.challenge === "string" ? welcome.challenge : null;
     const isReconnect = this.#everConnected;
@@ -689,16 +808,14 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     if (isReconnect) {
       this.#reAuthActive();
       const channels = [...this.#channels];
-      if (channels.length) {
-        this.#sendSubscribe(channels).catch((err: unknown) => this.#emitError(err));
-      }
+      if (channels.length) this.#resubscribe(channels);
       this.emit("reconnected", welcome);
       this.emit("resync", "reconnect");
       for (const b of this.#books.values()) void b.resync();
     } else if (this.#channels.size) {
       // Channels queued before the first connection.
       this.#reAuthActive();
-      this.#sendSubscribe([...this.#channels]).catch((err: unknown) => this.#emitError(err));
+      this.#resubscribe([...this.#channels]);
     } else {
       this.#reAuthActive();
     }
@@ -785,7 +902,16 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
         if (typeof frame["challenge"] === "string") this.#challenge = frame["challenge"];
         if (id !== null) {
           const pending = this.#pending.get(id);
-          if (pending) {
+          if (pending?.errors) {
+            // A refused channel of a subscribe: collected; the request completes on its ack, or
+            // here once every channel was refused (no ack follows then).
+            pending.errors.push(err);
+            if (pending.errors.length >= pending.channels.length) {
+              this.#pending.delete(id);
+              clearTimeout(pending.timer);
+              pending.resolve(null);
+            }
+          } else if (pending) {
             this.#pending.delete(id);
             clearTimeout(pending.timer);
             pending.reject(err);
@@ -824,6 +950,13 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     if (event.type === "balances.resync" || event.type === "deposits.resync" || event.type === "withdrawals.resync") {
       this.emit("event", event);
       this.emit("resync", event.type === "balances.resync" ? "balances_resync" : event.type === "deposits.resync" ? "deposits_resync" : "withdrawals_resync");
+      return;
+    }
+    if (event.type === "futures.resync") {
+      this.emit("event", event);
+      this.emit("resync", "futures_resync", event.channel);
+      // The server's account poller stopped: subscribing again alone is a no-op.
+      if (event.channel === FUTURES_ACCOUNT) void this.#renewFuturesAccount();
       return;
     }
     if (event.type === "orderbook.update") {
@@ -898,6 +1031,7 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   #signedOut(reason: Exclude<AuthChangeReason, "user_changed">, code?: string): void {
     const previousUserId = this.#authUserId;
     this.#authUserId = null;
+    this.#authed = false;
     for (const c of PRIVATE_CHANNELS) this.#resetSeq(c);
     const dropped = this.#dropPrivate();
     const change: AuthChange = { reason, previousUserId, userId: null, dropped };
@@ -909,6 +1043,7 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   #onAuthenticated(userId: string | null): void {
     const previousUserId = this.#authUserId;
     this.#authUserId = userId;
+    this.#authed = true;
     if (previousUserId !== null && userId !== previousUserId) {
       for (const c of PRIVATE_CHANNELS) this.#resetSeq(c);
       const dropped = this.#dropPrivate();
@@ -918,13 +1053,7 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     const channels = [...this.#pendingPrivate];
     this.#pendingPrivate.clear();
     for (const c of channels) this.#channels.add(c);
-    this.#sendSubscribe(channels).catch((err: unknown) => {
-      // Refused by the server (e.g. signed out again meanwhile): back to pending, not held.
-      if (err instanceof CexyWebSocketError && err.fromServer) {
-        for (const c of channels) if (this.#channels.delete(c)) this.#pendingPrivate.add(c);
-      }
-      this.#emitError(err);
-    });
+    this.#resubscribe(channels);
     this.emit("resync", "reauth");
   }
 
@@ -942,16 +1071,26 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
    * (`ACK_TYPE[kind]`) or an `error` with that id. With `strict`, no acknowledgement within
    * `ackTimeoutMs` rejects; otherwise it resolves with null.
    */
-  #request(kind: RequestKind, payload: Record<string, unknown>, channels: string[], strict: boolean): Promise<Record<string, unknown> | null> {
+  #request(
+    kind: RequestKind,
+    payload: Record<string, unknown>,
+    channels: string[],
+    strict: boolean,
+    errors?: CexyWebSocketError[],
+  ): Promise<Record<string, unknown> | null> {
     const id = this.#newId();
     if (kind === "auth_key") this.#authKeyIds.add(id);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#pending.delete(id);
-        if (strict) reject(new CexyWebSocketError("TIMEOUT", `no ${ACK_TYPE[kind]} acknowledgement for ${kind} (id ${id})`));
+        // A subscribe that got error frames but no ack in time: every channel counts as refused.
+        if (errors?.length) resolve(null);
+        else if (strict) reject(new CexyWebSocketError("TIMEOUT", `no ${ACK_TYPE[kind]} acknowledgement for ${kind} (id ${id})`));
         else resolve(null);
       }, this.#opts.ackTimeoutMs);
-      this.#pending.set(id, { id, kind, channels, resolve, reject, timer });
+      const pending: Pending = { id, kind, channels, resolve, reject, timer };
+      if (errors) pending.errors = errors;
+      this.#pending.set(id, pending);
       try {
         this.#send({ op: kind, ...payload, id });
       } catch (err) {
@@ -1011,11 +1150,102 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     return auth === undefined ? { userId, queued: false } : { userId, queued: false, auth };
   }
 
-  async #sendSubscribe(channels: string[]): Promise<string[]> {
-    // `subscribed` is sent only when something was added: silence means nothing new.
-    const ack = await this.#request("subscribe", { channels }, channels, false);
-    const acked = ack?.["channels"];
-    return Array.isArray(acked) ? acked.filter((c): c is string => typeof c === "string") : [];
+  /**
+   * Sends one subscribe frame for `channels`. `onRejected` runs at once for each channel the server
+   * refused (later frames must see it gone); another failure (no ack and no error in time, a
+   * disconnect) is `failure`.
+   */
+  async #subscribeGroups(
+    channels: string[],
+    onRejected: (x: SubscribeRejection) => void,
+  ): Promise<{ added: string[]; rejected: SubscribeRejection[]; failure?: unknown }> {
+    try {
+      const r = await this.#sendSubscribe(channels);
+      // An accepted channel is held under the server's canonical name from the ack (rule 13).
+      if (r.renamed.size) {
+        const next = [...this.#channels].map((c) => r.renamed.get(c) ?? c);
+        this.#channels = new Set(next);
+      }
+      for (const x of r.rejected) onRejected(x);
+      return { added: r.added, rejected: r.rejected };
+    } catch (err) {
+      return { added: [], rejected: [], failure: err };
+    }
+  }
+
+  /**
+   * Re-sends held channels (reconnect, re-auth). A private channel refused `UNAUTHENTICATED` goes
+   * back to pending (sent after the next successful auth); any other refusal drops the channel.
+   * Every refusal is reported as an `error` event.
+   */
+  #resubscribe(channels: string[]): void {
+    void this.#subscribeGroups(channels, (x) => this.#onResubscribeRejected(x)).then((r) => {
+      if (r.failure !== undefined) this.#emitError(r.failure);
+    });
+  }
+
+  #onResubscribeRejected(x: SubscribeRejection): void {
+    const held = this.#channels.delete(x.channel);
+    if (held && PRIVATE_CHANNELS.has(x.channel) && x.error.code === "UNAUTHENTICATED") this.#pendingPrivate.add(x.channel);
+    this.#emitError(x.error);
+  }
+
+  /**
+   * After `futures.resync` on `futures.account`: unsubscribe, then subscribe again (the server
+   * starts a new poller). A refusal (e.g. NOT_FOUND "No futures account") is reported as an
+   * `error` and the channel is no longer held (`UNAUTHENTICATED`: pending until the next auth).
+   */
+  async #renewFuturesAccount(): Promise<void> {
+    if (!this.#channels.has(FUTURES_ACCOUNT) || !this.connected) return;
+    this.#resetSeq(FUTURES_ACCOUNT); // the account's sequence restarts after a resubscribe
+    try {
+      // Sent back to back: the server handles a connection's frames in order.
+      this.#request("unsubscribe", { channels: [FUTURES_ACCOUNT] }, [FUTURES_ACCOUNT], false).catch(() => {});
+      const r = await this.#subscribeGroups([FUTURES_ACCOUNT], (x) => this.#onResubscribeRejected(x));
+      if (r.failure !== undefined) this.#emitError(r.failure);
+    } catch (err) {
+      this.#emitError(err);
+    }
+  }
+
+  /**
+   * One subscribe request. Completes on the `subscribed` ack (channels missing from it were
+   * refused), or once every channel was refused, or on the ack timeout (with error frames: all
+   * refused; without: rejects TIMEOUT).
+   */
+  async #sendSubscribe(
+    channels: string[],
+  ): Promise<{ added: string[]; rejected: SubscribeRejection[]; renamed: Map<string, string> }> {
+    const errors: CexyWebSocketError[] = [];
+    const ack = await this.#request("subscribe", { channels }, channels, true, errors);
+    const raw = ack?.["channels"];
+    const acks = Array.isArray(raw) ? raw.filter((c): c is string => typeof c === "string") : [];
+    const added = [...new Set(acks)];
+    // The ack lists the accepted channels by canonical name (spot symbols are normalised, futures
+    // coins are not); the others were refused, one error frame each, in the order sent.
+    // Matched as a multiset: the ack can repeat a name (a channel already held, or two spellings).
+    // `renamed` maps a sent spelling to the ack name it is held under.
+    const acked = new Map<string, string[]>();
+    for (const c of acks) {
+      const k = canonicalChannel(c);
+      acked.set(k, [...(acked.get(k) ?? []), c]);
+    }
+    const renamed = new Map<string, string>();
+    const missing = ack
+      ? channels.filter((c) => {
+          const name = acked.get(canonicalChannel(c))?.shift();
+          if (name !== undefined && name !== c) renamed.set(c, name);
+          return name === undefined;
+        })
+      : channels;
+    if (errors.length === 0) return { added, rejected: [], renamed };
+    const rejected: SubscribeRejection[] = [];
+    missing.forEach((channel, i) => {
+      const e = errors[Math.min(i, errors.length - 1)];
+      if (e) rejected.push({ channel, error: new CexyWebSocketError(e.code, e.message, true, [channel]) });
+    });
+    if (rejected.length === 0) this.#logger.warn(`subscribe: ${errors.length} error(s) but every channel was acknowledged`);
+    return { added, rejected, renamed };
   }
 
   #send(frame: Record<string, unknown>): void {
@@ -1134,6 +1364,20 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   #newId(): string {
     return String(this.#nextId++);
   }
+}
+
+/**
+ * A channel name as the server acknowledges it, for matching: the name is trimmed; the channel
+ * kind matches exactly; futures names exactly (coins are case-sensitive); a spot market symbol is
+ * trimmed and uppercased with `_` read as `/` (`ticker:btc_usdt` is acknowledged as `ticker:BTC/USDT`).
+ */
+export function canonicalChannel(channel: string): string {
+  const name = channel.trim();
+  if (isFuturesChannel(name)) return name;
+  const i = name.indexOf(":");
+  if (i < 0) return name;
+  // The kind matches exactly (`Ticker:BTC/USDT` is refused); only the market symbol is normalised.
+  return `${name.slice(0, i)}:${name.slice(i + 1).trim().toUpperCase().replace(/_/g, "/")}`;
 }
 
 function parseFrame(data: unknown): Record<string, unknown> | null {

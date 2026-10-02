@@ -214,6 +214,47 @@ for await (const e of cexy.account.iterateLedger({}, { maxItems: 100 })) {
 
 Ids (`OrderId`, `TradeId`, `UserId`, …) are plain strings; the SDK does not check their format.
 
+## Futures data (read only)
+
+`cexy.futures` reads futures market data and your account's own futures data. Futures trading is not
+part of the API.
+
+Public market data needs no key:
+
+```ts
+const { markets, as_of, stale } = await cexy.futures.markets();
+const { market } = await cexy.futures.market("BTC");
+const book = await cexy.futures.orderBook("BTC", { depth: 10 }); // up to 20 levels a side
+const { candles } = await cexy.futures.candles("BTC", { interval: "1h" }); // or { interval, before: unixMs }
+const { trades } = await cexy.futures.trades("BTC", { limit: 50 }); // at most 100, newest first
+```
+
+Your account's own data needs an API key with the `read` scope (requests are signed):
+
+```ts
+const pos = await me.futures.positions(); // margin summary and open positions
+const open = await me.futures.openOrders();
+const page = await me.futures.fills(); // one page: { has_account, fills, next_cursor }
+for await (const fill of me.futures.iterateFills()) console.log(fill.id, fill.direction, fill.closed_pnl);
+for await (const pay of me.futures.iterateFunding()) console.log(pay.coin, pay.amount);
+```
+
+- **`as_of` / `stale`.** Responses carry `stale` (and `as_of`, when the data was read). `stale: true` means
+  the data is older than it should be. For books and trades it is the live feed's health, not the data's
+  age: a quiet book can be unchanged and current.
+- **No futures account.** Account reads answer `has_account: false` (not an error). The iterators then end
+  at once with no rows; their return value is `{ has_account }`.
+- **Paging.** Fills and funding are newest first, 30 days back. A page can be short, even empty, and still
+  have a `next_cursor`: keep paging until it is `null`. The cursor is opaque: pass it back exactly as given
+  (the SDK percent-encodes it). The iterators do this for you. When the server answers an empty page
+  whose `next_cursor` is the cursor just sent, the data source is busy: the iterator waits (the normal
+  retry backoff) and asks again, at most 3 times in a row (`{ maxBusyRetries }`), then throws
+  `PagingStalledError` (code `PAGING_STALLED`, retryable). The rows yielded before it are not the full
+  history; resume later with `iterateFills({ cursor: err.cursor })`.
+- **Unavailable.** When nothing usable is cached and the data cannot be read, the API answers 503
+  `SERVICE_UNAVAILABLE` with `details.reason` `futures_data_unavailable` and a `Retry-After`. It is
+  retryable: the SDK retries it like other retryable errors, honouring `Retry-After`.
+
 ## Rate limits
 
 The client has a token-bucket limiter: **100 requests/minute without a key** (the server allows 120/min
@@ -251,6 +292,14 @@ What the client does for you:
   (and rejects on an `error` with its id, or on timeout), `subscribe` on `subscribed`, `unsubscribe` on
   `unsubscribed`, `ping()` on `pong`.
 - Guards locally: at most 100 subscriptions (extras are returned in `refused`) and 200 messages/minute.
+- Collects the server's refusals of a subscribe (one `error` frame per refused channel, sent before the
+  single `subscribed` ack, or with no ack when every channel was refused). `subscribe()` resolves with the
+  accepted channels (`added`) and the refused ones with their errors (`rejected: [{ channel, error }]`); it
+  rejects only when every channel sent was refused, or on an ack timeout / disconnect without any error.
+  Refused channels are not held and not retried.
+- When it re-subscribes after a reconnect or a re-auth, a private channel refused `UNAUTHENTICATED` goes
+  back to pending (sent after the next successful auth); any other refusal drops the channel and is
+  reported as an `error` event.
 - Warns once if the server speaks a newer `protocol_version`, and ignores unknown event types.
 
 **Order-book rules** (applied by `ws.orderBook()`; follow them if you build your own):
@@ -291,6 +340,46 @@ are skipped (after a short reorder window, `reorderWindowMs`, default 250 ms), t
 `sequenceGap` and `resync` `"sequence_gap"`: refetch that channel's state over REST.
 `balances.resync`, `deposits.resync` and `withdrawals.resync` (the last two planned) emit `resync`
 with `"balances_resync"`, `"deposits_resync"` or `"withdrawals_resync"`.
+
+### Futures channels
+
+Build names with `futuresChannel` (an invalid coin or interval is a local `CONFIG` error and nothing is
+sent):
+
+```ts
+import { futuresChannel } from "@cexyio/cexy";
+
+const [{ markets }, book] = await Promise.all([cexy.futures.markets(), cexy.futures.orderBook("BTC")]); // seed from REST
+await ws.subscribe([futuresChannel.mids(), futuresChannel.orderbook("BTC"), futuresChannel.candles("BTC", "1m")]);
+ws.on("event", (e) => {
+  if (e.type === "futures.orderbook.update") console.log(e.data.bids[0]?.price, e.data.asks[0]?.price);
+  if (e.type === "futures.positions") console.log(e.data.positions.account_value, e.data.stale);
+});
+ws.on("resync", (reason, channel) => {
+  if (reason === "futures_resync") {/* refetch `channel` over REST */}
+});
+```
+
+- Public: `futures.mids`, `futures.orderbook:{coin}`, `futures.trades:{coin}`,
+  `futures.candles:{coin}:{interval}` (`1m 5m 15m 1h 4h 1d`) and `futures.status` (`live` / `degraded`,
+  only on a change). **No snapshot arrives on subscribe: seed from REST** (`cexy.futures`). Book, mids,
+  positions and orders frames are full replacements; book levels are `{ price, size }` objects (not the spot
+  `[price, quantity]` arrays). Events: `futures.mids`, `futures.orderbook.update`, `futures.trades.new`,
+  `futures.candle.update`, `futures.status`.
+- **Coins are case-sensitive**: use them exactly as `cexy.futures.markets()` lists them (`BTC`, `kPEPE`);
+  `btc` is refused `NOT_FOUND`.
+- Private: `futures.account` (`futures.positions` and `futures.orders`, in full on subscribe and on change).
+  It is held until `auth()` / `authKey()` succeeds (`ws.pendingPrivateChannels`), then sent.
+- `futures.resync` (data may have been missed) is delivered as an event plus `resync` with
+  `"futures_resync"` and the channel: refetch that channel over REST. **On `futures.account` the client also
+  unsubscribes and subscribes again by itself** (the server's account updates stopped); if that subscribe is
+  refused (e.g. `NOT_FOUND` "No futures account") it emits `error` and stops holding the channel.
+- A refusal (`RATE_LIMITED`, `NOT_FOUND`, `VALIDATION_FAILED`, `SERVICE_UNAVAILABLE`) is tied to its
+  channel like any other (`rejected`, or `err.channels` when everything was refused); futures names are
+  matched exactly. A refused channel is not held and **not retried automatically**: error frames
+  carry no retry hint, so wait before trying again (about 60 s after `RATE_LIMITED`).
+- The client pings every 30 s (`pingIntervalMs` may not exceed 60 s; the server closes connections silent
+  for 90 s or more).
 
 ### Request signing
 

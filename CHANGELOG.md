@@ -6,7 +6,64 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-dev.13] (2026-10-02)
+
+### Added
+- Futures data (read only), `client.futures`: public market data (`markets()`, `market(coin)`,
+  `orderBook(coin, { depth })`, `candles(coin, { interval, before })`, `trades(coin, { limit })`) and the
+  account's own data with a `read` key (`positions()`, `openOrders()`, `fills({ cursor })`,
+  `funding({ cursor })`). Responses carry `as_of`/`stale`; account reads answer `has_account: false`
+  without a futures account. 503 `futures_data_unavailable` is retried like other retryable errors.
+- `futures.iterateFills()` / `iterateFunding()`: page until `next_cursor` is null, sending the opaque
+  cursor back verbatim. An empty page that repeats the cursor (busy) is re-asked after the normal backoff,
+  at most 3 times in a row (`maxBusyRetries`), then `PagingStalledError` (code `PAGING_STALLED`,
+  retryable). Shared conformance: `conformance/futures/history_paging.json`.
+- `PagingCursorRepeatedError` (code `PAGING_CURSOR_REPEATED`, not retryable): a history page with rows
+  that repeats the cursor just sent is yielded, then the iterator stops instead of looping.
+  `maxBusyRetries` is independent of `maxRetries`.
+- Futures WebSocket channels: `futuresChannel.mids()`, `.orderbook(coin)`, `.trades(coin)`,
+  `.candles(coin, interval)`, `.status()`, `.account()` (coin and interval checked locally: `CONFIG`).
+  Typed events `futures.mids`, `futures.orderbook.update`, `futures.trades.new`,
+  `futures.candle.update`, `futures.status`, `futures.positions`, `futures.orders` and `futures.resync`
+  (also `resync` with `"futures_resync"` and the channel; the `resync` event now passes an optional
+  channel). `futures.account` is private and held until `auth()`/`authKey()` succeeds
+  (`pendingPrivateChannels`); on its `futures.resync` the client unsubscribes and subscribes again, and a
+  refusal is reported (`error`) and drops the channel. Refused futures subscribes are not retried. Shared conformance: `conformance/ws/futures.json`.
+- `MAX_PING_INTERVAL_MS` (60 s): a larger `pingIntervalMs` is a `CONFIG` error (the server closes
+  connections silent for 90 s); the default stays 30 s.
+- Types for the futures models. Generated names are kept (`PerpMarket`, `Level`, `Position`,
+  `Positions`, `OpenOrder`, `Funding`, `FuturesBook`, ...), except three that collide with spot models:
+  `FuturesCandle`, `FuturesFill` and `FuturesPublicTrade`.
+
+### Changed
+- `subscribe()` now rejects `TIMEOUT` when the server neither acknowledges nor refuses within
+  `ackTimeoutMs` (it resolved with `added: []` before). The channels stay held (re-sent after a reconnect).
+
 ### Fixed
+- WebSocket subscribe refusals, every channel family: the error frames of a subscribe (one per refused
+  channel, sent before its single `subscribed` ack, or with no ack when every channel was refused) are
+  collected (by request id) instead of failing the whole call on the first one, and attributed by
+  comparing the ack with what was sent (spot names case-insensitively with `_` as `/`, futures names
+  exactly; `canonicalChannel()`). The request completes on the ack, once
+  every channel was refused, or on the ack timeout after at least one error (then all refused).
+  `subscribe()` resolves with the accepted channels and `rejected: [{ channel, error }]`, and rejects
+  only when every channel sent was refused (the error's `rejected` then lists each channel and its error). Before, a partly refused batch rejected and forgot the
+  channels the server had accepted. Refused channels are not held and not retried.
+- Re-subscribing after a reconnect or a re-auth: a private channel refused `UNAUTHENTICATED` goes back
+  to pending; any other refusal drops the channel and is reported as an `error` event (before, a
+  refusal on reconnect left the channel held).
+- WebSocket subscribe matching (spec ace4a5e): channel kinds match exactly; only the spot market symbol
+  is canonicalised (trimmed, uppercased, `_` as `/`). `canonicalChannel()` no longer lowercases the kind
+  (`Ticker:BTC/USDT` is a different, refused channel, not a spelling of `ticker:BTC/USDT`) and trims the
+  name. Ack names are matched as a multiset; two spellings of one channel in a `subscribe()` call (or a
+  spelling of a channel already held) are sent once, first spelling kept. Shared conformance cases
+  `channel_kind_is_exact`, `same_channel_two_spellings_acked_twice`, `event_before_ack_is_delivered`,
+  `idless_error_not_attributed`.
+- WebSocket held channel names (spec 6cea8f0, rule 13): an accepted channel is now held, reported in
+  `added` and re-sent after a reconnect under the server's canonical name from the ack
+  (`ticker:btc_usdt` is held as `ticker:BTC/USDT`), so `channels` matches event channels. It was held
+  as spelled by the caller. `unsubscribe()` finds a held channel by any spelling the server
+  canonicalises alike, and `added` lists each ack name once.
 - `baseUrl` trailing slashes are stripped in linear time (a `/\/+$/` regex was polynomial on a long run
   of slashes; code-scanning alert js/polynomial-redos).
 

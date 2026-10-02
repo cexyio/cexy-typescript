@@ -9,6 +9,7 @@ import {
   AssetsResource,
   ExportsResource,
   FeesResource,
+  FuturesResource,
   MarketsResource,
   NetworksResource,
   PoolsResource,
@@ -100,6 +101,8 @@ export class CexyClient {
   readonly exports: ExportsResource;
   readonly wallet: WalletResource;
   readonly trading: TradingResource;
+  /** Futures market data and the account's own futures data (read only). */
+  readonly futures: FuturesResource;
 
   readonly #transport: Transport;
   readonly #baseUrl: string;
@@ -182,6 +185,7 @@ export class CexyClient {
     this.exports = new ExportsResource(t);
     this.wallet = new WalletResource(t);
     this.trading = new TradingResource(t);
+    this.futures = new FuturesResource(t);
   }
 
   /** True if the client holds credentials (private endpoints are available). */
