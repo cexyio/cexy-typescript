@@ -292,6 +292,14 @@ What the client does for you:
   (and rejects on an `error` with its id, or on timeout), `subscribe` on `subscribed`, `unsubscribe` on
   `unsubscribed`, `ping()` on `pong`.
 - Guards locally: at most 100 subscriptions (extras are returned in `refused`) and 200 messages/minute.
+- Collects the server's refusals of a subscribe (one `error` frame per refused channel, sent before the
+  single `subscribed` ack, or with no ack when every channel was refused). `subscribe()` resolves with the
+  accepted channels (`added`) and the refused ones with their errors (`rejected: [{ channel, error }]`); it
+  rejects only when every channel sent was refused, or on an ack timeout / disconnect without any error.
+  Refused channels are not held and not retried.
+- When it re-subscribes after a reconnect or a re-auth, a private channel refused `UNAUTHENTICATED` goes
+  back to pending (sent after the next successful auth); any other refusal drops the channel and is
+  reported as an `error` event.
 - Warns once if the server speaks a newer `protocol_version`, and ignores unknown event types.
 
 **Order-book rules** (applied by `ws.orderBook()`; follow them if you build your own):
@@ -367,9 +375,9 @@ ws.on("resync", (reason, channel) => {
   unsubscribes and subscribes again by itself** (the server's account updates stopped); if that subscribe is
   refused (e.g. `NOT_FOUND` "No futures account") it emits `error` and stops holding the channel.
 - Each futures channel is subscribed in a request of its own, so a refusal (`RATE_LIMITED`, `NOT_FOUND`,
-  `VALIDATION_FAILED`, `SERVICE_UNAVAILABLE`) names its channel (`err.channels`). A refused channel is not
-  held and **not retried automatically**: error frames carry no retry hint, so wait before trying again
-  (about 60 s after `RATE_LIMITED`).
+  `VALIDATION_FAILED`, `SERVICE_UNAVAILABLE`) is tied to its channel (`rejected`, or `err.channels` when
+  everything was refused). A refused channel is not held and **not retried automatically**: error frames
+  carry no retry hint, so wait before trying again (about 60 s after `RATE_LIMITED`).
 - The client pings every 30 s (`pingIntervalMs` may not exceed 60 s; the server closes connections silent
   for 90 s or more).
 

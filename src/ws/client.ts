@@ -182,12 +182,23 @@ export interface CexyWebSocketOptions {
 }
 
 export interface SubscribeResult {
-  /** Channels the server confirmed as newly added. */
+  /** Channels the server confirmed (its `subscribed` acknowledgements). */
   added: string[];
-  /** Channels refused locally because the subscription cap was reached. */
+  /** Channels refused locally because the subscription cap was reached (nothing sent). */
   refused: string[];
   /** Channels already held (nothing sent for them). */
   alreadySubscribed: string[];
+  /**
+   * Channels the server refused (an `error` frame with the request's id), each with its error. They
+   * are not held and not retried. When EVERY channel sent was refused, `subscribe()` rejects instead.
+   */
+  rejected: SubscribeRejection[];
+}
+
+/** A channel the server refused, with the error frame (`error.channels` is `[channel]`). */
+export interface SubscribeRejection {
+  channel: string;
+  error: CexyWebSocketError;
 }
 
 export interface CloseInfo {
@@ -325,6 +336,11 @@ interface Pending {
   resolve: (ack: Record<string, unknown> | null) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  /**
+   * Subscribe only: the error frames with this request's id. The server sends one per refused
+   * channel BEFORE its single `subscribed` ack, and no ack when it refused every channel.
+   */
+  errors?: CexyWebSocketError[];
 }
 
 const defaultLogger: WsLogger = { warn: (m) => console.warn(`[cexy] ${m}`) };
@@ -553,7 +569,7 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     const accepted = fresh.slice(0, room);
     const refused = fresh.slice(room);
     if (refused.length) this.#logger.warn(`subscription cap (${this.#opts.maxSubscriptions}) reached; refused: ${refused.join(", ")}`);
-    if (accepted.length === 0) return { added: [], refused, alreadySubscribed };
+    if (accepted.length === 0) return { added: [], refused, alreadySubscribed, rejected: [] };
     let send = accepted;
     if (this.connected && !this.#authed) {
       // futures.account waits for authentication (sent by #onAuthenticated). The older private
@@ -562,15 +578,16 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
       send = accepted.filter((c) => !HELD_UNTIL_AUTH.has(c));
     }
     for (const c of send) this.#channels.add(c);
-    if (!this.connected || send.length === 0) return { added: [], refused, alreadySubscribed };
+    if (!this.connected || send.length === 0) return { added: [], refused, alreadySubscribed, rejected: [] };
     // Refused by the server (e.g. UNAUTHENTICATED, or a futures RATE_LIMITED / NOT_FOUND): not held.
-    const r = await this.#subscribeGroups(send, (x) => {
-      for (const c of x.channels) this.#channels.delete(c);
-    });
-    if (r.failure !== undefined) throw toError(r.failure);
-    const first = r.refused[0];
-    if (first) throw first;
-    return { added: r.added, refused, alreadySubscribed };
+    const r = await this.#subscribeGroups(send, (x) => this.#channels.delete(x.channel));
+    const first = r.rejected[0];
+    if (first && r.rejected.length === send.length) {
+      // Every channel sent was refused.
+      throw new CexyWebSocketError(first.error.code, first.error.message, true, r.rejected.map((x) => x.channel));
+    }
+    if (r.failure !== undefined && r.added.length === 0 && r.rejected.length === 0) throw toError(r.failure);
+    return { added: r.added, refused, alreadySubscribed, rejected: r.rejected };
   }
 
   /**
@@ -867,7 +884,16 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
         if (typeof frame["challenge"] === "string") this.#challenge = frame["challenge"];
         if (id !== null) {
           const pending = this.#pending.get(id);
-          if (pending) {
+          if (pending?.errors) {
+            // A refused channel of a subscribe: collected; the request completes on its ack, or
+            // here once every channel was refused (no ack follows then).
+            pending.errors.push(err);
+            if (pending.errors.length >= pending.channels.length) {
+              this.#pending.delete(id);
+              clearTimeout(pending.timer);
+              pending.resolve(null);
+            }
+          } else if (pending) {
             this.#pending.delete(id);
             clearTimeout(pending.timer);
             pending.reject(err);
@@ -1009,14 +1035,7 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     const channels = [...this.#pendingPrivate];
     this.#pendingPrivate.clear();
     for (const c of channels) this.#channels.add(c);
-    void this.#subscribeGroups(channels, (x) => {
-      // Refused by the server (e.g. signed out again meanwhile): back to pending, not held.
-      // A refused futures channel is dropped (never retried automatically).
-      for (const c of x.channels) if (this.#channels.delete(c) && !isFuturesChannel(c)) this.#pendingPrivate.add(c);
-      this.#emitError(x);
-    }).then((r) => {
-      if (r.failure !== undefined) this.#emitError(r.failure);
-    });
+    this.#resubscribe(channels);
     this.emit("resync", "reauth");
   }
 
@@ -1034,16 +1053,26 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
    * (`ACK_TYPE[kind]`) or an `error` with that id. With `strict`, no acknowledgement within
    * `ackTimeoutMs` rejects; otherwise it resolves with null.
    */
-  #request(kind: RequestKind, payload: Record<string, unknown>, channels: string[], strict: boolean): Promise<Record<string, unknown> | null> {
+  #request(
+    kind: RequestKind,
+    payload: Record<string, unknown>,
+    channels: string[],
+    strict: boolean,
+    errors?: CexyWebSocketError[],
+  ): Promise<Record<string, unknown> | null> {
     const id = this.#newId();
     if (kind === "auth_key") this.#authKeyIds.add(id);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#pending.delete(id);
-        if (strict) reject(new CexyWebSocketError("TIMEOUT", `no ${ACK_TYPE[kind]} acknowledgement for ${kind} (id ${id})`));
+        // A subscribe that got error frames but no ack in time: every channel counts as refused.
+        if (errors?.length) resolve(null);
+        else if (strict) reject(new CexyWebSocketError("TIMEOUT", `no ${ACK_TYPE[kind]} acknowledgement for ${kind} (id ${id})`));
         else resolve(null);
       }, this.#opts.ackTimeoutMs);
-      this.#pending.set(id, { id, kind, channels, resolve, reject, timer });
+      const pending: Pending = { id, kind, channels, resolve, reject, timer };
+      if (errors) pending.errors = errors;
+      this.#pending.set(id, pending);
       try {
         this.#send({ op: kind, ...payload, id });
       } catch (err) {
@@ -1104,30 +1133,29 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
   }
 
   /**
-   * Sends subscribe requests: every futures channel in a request of its own (the server reports a
-   * refusal only as an error frame, before the one `subscribed` ack and without the channel), the
-   * other channels together. Refusals come back per request; another failure (a disconnect) as
-   * `failure`.
+   * Sends subscribe requests: every futures channel in a request of its own, the other channels
+   * together in one. `onRejected` runs at once for each channel the server refused (later frames
+   * must see it gone); another failure (no ack and no error in time, a disconnect) is `failure`.
    */
   async #subscribeGroups(
     channels: string[],
-    onRefused: (err: CexyWebSocketError) => void,
-  ): Promise<{ added: string[]; refused: CexyWebSocketError[]; failure?: unknown }> {
+    onRejected: (x: SubscribeRejection) => void,
+  ): Promise<{ added: string[]; rejected: SubscribeRejection[]; failure?: unknown }> {
     const others = channels.filter((c) => !isFuturesChannel(c));
     const groups = [...(others.length ? [others] : []), ...channels.filter(isFuturesChannel).map((c) => [c])];
-    const out: { added: string[]; refused: CexyWebSocketError[]; failure?: unknown } = { added: [], refused: [] };
+    const out: { added: string[]; rejected: SubscribeRejection[]; failure?: unknown } = { added: [], rejected: [] };
     await Promise.all(
       groups.map((g) =>
         this.#sendSubscribe(g).then(
-          (added) => {
-            out.added.push(...added);
+          (r) => {
+            out.added.push(...r.added);
+            for (const x of r.rejected) {
+              out.rejected.push(x);
+              onRejected(x);
+            }
           },
           (err: unknown) => {
-            if (err instanceof CexyWebSocketError && err.fromServer) {
-              const refused = new CexyWebSocketError(err.code, err.message, true, g);
-              out.refused.push(refused);
-              onRefused(refused); // at once: later frames must see the channel gone
-            } else if (out.failure === undefined) out.failure = err;
+            if (out.failure === undefined) out.failure = err;
           },
         ),
       ),
@@ -1135,20 +1163,27 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     return out;
   }
 
-  /** Re-sends held channels on a new connection; a channel the server refuses is no longer held. */
+  /**
+   * Re-sends held channels (reconnect, re-auth). A private channel refused `UNAUTHENTICATED` goes
+   * back to pending (sent after the next successful auth); any other refusal drops the channel.
+   * Every refusal is reported as an `error` event.
+   */
   #resubscribe(channels: string[]): void {
-    void this.#subscribeGroups(channels, (x) => {
-      for (const c of x.channels) this.#channels.delete(c);
-      this.#emitError(x);
-    }).then((r) => {
+    void this.#subscribeGroups(channels, (x) => this.#onResubscribeRejected(x)).then((r) => {
       if (r.failure !== undefined) this.#emitError(r.failure);
     });
+  }
+
+  #onResubscribeRejected(x: SubscribeRejection): void {
+    const held = this.#channels.delete(x.channel);
+    if (held && PRIVATE_CHANNELS.has(x.channel) && x.error.code === "UNAUTHENTICATED") this.#pendingPrivate.add(x.channel);
+    this.#emitError(x.error);
   }
 
   /**
    * After `futures.resync` on `futures.account`: unsubscribe, then subscribe again (the server
    * starts a new poller). A refusal (e.g. NOT_FOUND "No futures account") is reported as an
-   * `error` and the channel is no longer held.
+   * `error` and the channel is no longer held (`UNAUTHENTICATED`: pending until the next auth).
    */
   async #renewFuturesAccount(): Promise<void> {
     if (!this.#channels.has(FUTURES_ACCOUNT) || !this.connected) return;
@@ -1156,22 +1191,36 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
     try {
       // Sent back to back: the server handles a connection's frames in order.
       this.#request("unsubscribe", { channels: [FUTURES_ACCOUNT] }, [FUTURES_ACCOUNT], false).catch(() => {});
-      const r = await this.#subscribeGroups([FUTURES_ACCOUNT], (x) => {
-        this.#channels.delete(FUTURES_ACCOUNT);
-        this.#pendingPrivate.delete(FUTURES_ACCOUNT);
-        this.#emitError(x);
-      });
+      const r = await this.#subscribeGroups([FUTURES_ACCOUNT], (x) => this.#onResubscribeRejected(x));
       if (r.failure !== undefined) this.#emitError(r.failure);
     } catch (err) {
       this.#emitError(err);
     }
   }
 
-  async #sendSubscribe(channels: string[]): Promise<string[]> {
-    // `subscribed` is sent only when something was added: silence means nothing new.
-    const ack = await this.#request("subscribe", { channels }, channels, false);
-    const acked = ack?.["channels"];
-    return Array.isArray(acked) ? acked.filter((c): c is string => typeof c === "string") : [];
+  /**
+   * One subscribe request. Completes on the `subscribed` ack (channels missing from it were
+   * refused), or once every channel was refused, or on the ack timeout (with error frames: all
+   * refused; without: rejects TIMEOUT).
+   */
+  async #sendSubscribe(channels: string[]): Promise<{ added: string[]; rejected: SubscribeRejection[] }> {
+    const errors: CexyWebSocketError[] = [];
+    const ack = await this.#request("subscribe", { channels }, channels, true, errors);
+    const raw = ack?.["channels"];
+    const added = Array.isArray(raw) ? raw.filter((c): c is string => typeof c === "string") : [];
+    if (errors.length === 0) return { added, rejected: [] };
+    // The ack lists the accepted channels by canonical name (spot symbols are normalised, futures
+    // coins are not); the others were refused, one error frame each, in order.
+    const exact = new Set(added);
+    const folded = new Set(added.map((c) => c.toLowerCase()));
+    const missing = ack ? channels.filter((c) => !exact.has(c) && (isFuturesChannel(c) || !folded.has(c.toLowerCase()))) : channels;
+    const rejected: SubscribeRejection[] = [];
+    missing.forEach((channel, i) => {
+      const e = errors[Math.min(i, errors.length - 1)];
+      if (e) rejected.push({ channel, error: new CexyWebSocketError(e.code, e.message, true, [channel]) });
+    });
+    if (rejected.length === 0) this.#logger.warn(`subscribe: ${errors.length} error(s) but every channel was acknowledged`);
+    return { added, rejected };
   }
 
   #send(frame: Record<string, unknown>): void {

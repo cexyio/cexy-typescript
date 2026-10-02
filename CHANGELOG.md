@@ -37,7 +37,21 @@ All notable changes to this project are documented here. The format follows
   `Positions`, `OpenOrder`, `Funding`, `FuturesBook`, ...), except three that collide with spot models:
   `FuturesCandle`, `FuturesFill` and `FuturesPublicTrade`.
 
+### Changed
+- `subscribe()` now rejects `TIMEOUT` when the server neither acknowledges nor refuses within
+  `ackTimeoutMs` (it resolved with `added: []` before). The channels stay held (re-sent after a reconnect).
+
 ### Fixed
+- WebSocket subscribe refusals, every channel family: the error frames of a subscribe (one per refused
+  channel, sent before its single `subscribed` ack, or with no ack when every channel was refused) are
+  collected instead of failing the whole call on the first one. The request completes on the ack, once
+  every channel was refused, or on the ack timeout after at least one error (then all refused).
+  `subscribe()` resolves with the accepted channels and `rejected: [{ channel, error }]`, and rejects
+  only when every channel sent was refused. Before, a partly refused batch rejected and forgot the
+  channels the server had accepted. Refused channels are not held and not retried.
+- Re-subscribing after a reconnect or a re-auth: a private channel refused `UNAUTHENTICATED` goes back
+  to pending; any other refusal drops the channel and is reported as an `error` event (before, a
+  refusal on reconnect left the channel held).
 - `baseUrl` trailing slashes are stripped in linear time (a `/\/+$/` regex was polynomial on a long run
   of slashes; code-scanning alert js/polynomial-redos).
 

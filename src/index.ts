@@ -72,6 +72,7 @@ export {
   type SequenceGap,
   type WsClock,
   type SnapshotSource,
+  type SubscribeRejection,
   type SubscribeResult,
   type WsLogger,
   type WsKeySigner,

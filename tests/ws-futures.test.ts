@@ -7,6 +7,7 @@ import {
   MAX_PING_INTERVAL_MS,
   futuresChannel,
   type FuturesInterval,
+  type SubscribeResult,
   type WsEvent,
 } from "../src/index.js";
 import { HmacAuthenticator } from "../src/signing.js";
@@ -195,7 +196,7 @@ describe("futures WebSocket behaviour", () => {
     expect(() => new CexyWebSocket({ pingIntervalMs: MAX_PING_INTERVAL_MS + 1 })).toThrow(expect.objectContaining({ code: "CONFIG" }));
   });
 
-  it("each futures channel goes in a request of its own: a partial refusal (error before the one ack) names its channel", async () => {
+  it("each futures channel goes in a request of its own: a partial refusal resolves and names its channel", async () => {
     const { srv, ws } = await connect();
     const conn = srv.conns[0]!;
     const p = ws.subscribe(["ticker:BTC/USDT", "futures.orderbook:BTC", "futures.orderbook:btc"]).catch((e: unknown) => e);
@@ -205,9 +206,12 @@ describe("futures WebSocket behaviour", () => {
     conn.send({ type: "subscribed", channels: ["ticker:BTC/USDT"], id: subs[0].id });
     conn.send({ type: "subscribed", channels: ["futures.orderbook:BTC"], id: subs[1].id });
     conn.send({ type: "error", code: "NOT_FOUND", message: "Futures market not found", id: subs[2].id }); // no ack follows
-    const err = (await p) as CexyWebSocketError;
-    expect(err).toBeInstanceOf(CexyWebSocketError);
-    expect(err).toMatchObject({ code: "NOT_FOUND", fromServer: true, channels: ["futures.orderbook:btc"] });
+    const res = (await p) as SubscribeResult;
+    expect(res.added.sort()).toEqual(["futures.orderbook:BTC", "ticker:BTC/USDT"]);
+    expect(res.rejected).toHaveLength(1);
+    expect(res.rejected[0]!.channel).toBe("futures.orderbook:btc");
+    expect(res.rejected[0]!.error).toBeInstanceOf(CexyWebSocketError);
+    expect(res.rejected[0]!.error).toMatchObject({ code: "NOT_FOUND", fromServer: true, channels: ["futures.orderbook:btc"] });
     expect(ws.channels.sort()).toEqual(["futures.orderbook:BTC", "ticker:BTC/USDT"]);
     await ws.ping();
     expect(conn.received.filter((m) => m.op === "subscribe")).toHaveLength(3); // not retried
