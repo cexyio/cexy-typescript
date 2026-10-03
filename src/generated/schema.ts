@@ -1531,7 +1531,7 @@ export interface components {
          * @description What a ledger entry records.
          * @enum {string}
          */
-        LedgerEntryKind: "deposit" | "deposit_reversal" | "withdrawal_debit" | "withdrawal_fee" | "withdrawal_fee_reserve" | "withdrawal_release" | "withdrawal_fee_release" | "order_reserve" | "withdrawal_reserve" | "order_release" | "trade_debit" | "trade_credit" | "trade_fee" | "transfer_out" | "transfer_in" | "transfer_in_held" | "transfer_release" | "transfer_reversal" | "adjustment_credit" | "adjustment_debit" | "rebate" | "pool_join" | "pool_exit" | "futures_transfer_reserve" | "futures_transfer_release" | "futures_collateral_sent" | "futures_collateral_returned" | "trade_fee_revenue" | "withdrawal_fee_revenue" | "withdrawal_refund" | "withdrawal_fee_revenue_reversal" | "futures_transfer_fee_revenue" | "futures_hyperliquid_cost" | "futures_transfer_discrepancy" | "exchange_capital";
+        LedgerEntryKind: "deposit" | "deposit_reversal" | "withdrawal_debit" | "withdrawal_fee" | "withdrawal_fee_reserve" | "withdrawal_release" | "withdrawal_fee_release" | "order_reserve" | "withdrawal_reserve" | "order_release" | "trade_debit" | "trade_credit" | "trade_fee" | "transfer_out" | "transfer_in" | "transfer_in_held" | "transfer_release" | "transfer_reversal" | "adjustment_credit" | "adjustment_debit" | "rebate" | "pool_join" | "pool_exit" | "futures_transfer_reserve" | "futures_transfer_release" | "futures_collateral_sent" | "futures_collateral_returned" | "withdrawal_refund";
         /** @description One entry from the account's ledger. */
         LedgerEntryResponse: {
             /** @description Asset symbol. */
