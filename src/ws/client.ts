@@ -222,9 +222,9 @@ export type ResyncReason =
   | "sequence_gap"
   /** `balances.resync`: the server could not resume its balance change stream. */
   | "balances_resync"
-  /** `deposits.resync` (planned server frame): refetch the deposit list. */
+  /** `deposits.resync`: refetch the deposit list. */
   | "deposits_resync"
-  /** `withdrawals.resync` (planned server frame): refetch the withdrawal list. */
+  /** `withdrawals.resync`: refetch the withdrawal list. */
   | "withdrawals_resync"
   /**
    * `futures.resync` on the channel passed as the second argument: refetch it over REST. On
@@ -869,11 +869,15 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
         return;
       }
       case "signed_out": {
-        // signed_out (a planned server frame): the server signed this connection out (token expired, session
+        // signed_out: the server signed this connection out (token expired, session
         // revoked, or a future reason). Private subscriptions are gone; a fresh auth on this socket restores
         // them.
         const raw = typeof frame["reason"] === "string" && frame["reason"] !== "" ? frame["reason"] : "unknown";
         this.#token = null;
+        if (raw === "key_revoked" || raw === "key_expired") this.#keyAuth = false;
+        // Already signed out: session.revoked {current: true} precedes signed_out {reason: revoked}, and the pair
+        // is one sign-out.
+        if (!this.#authed) return;
         if (raw === "revoked") {
           this.#signedOut("session_revoked");
           this.emit("authLost", {
@@ -885,7 +889,6 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
           this.#signedOut("token_expired");
         } else {
           if (raw === "key_revoked" || raw === "key_expired") {
-            this.#keyAuth = false;
             this.#signedOut(raw);
           } else {
             this.#signedOut("signed_out", raw);
