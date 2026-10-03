@@ -222,9 +222,9 @@ export type ResyncReason =
   | "sequence_gap"
   /** `balances.resync`: the server could not resume its balance change stream. */
   | "balances_resync"
-  /** `deposits.resync` (planned server frame): refetch the deposit list. */
+  /** `deposits.resync`: refetch the deposit list. */
   | "deposits_resync"
-  /** `withdrawals.resync` (planned server frame): refetch the withdrawal list. */
+  /** `withdrawals.resync`: refetch the withdrawal list. */
   | "withdrawals_resync"
   /**
    * `futures.resync` on the channel passed as the second argument: refetch it over REST. On
@@ -869,7 +869,7 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
         return;
       }
       case "signed_out": {
-        // signed_out (a planned server frame): the server signed this connection out (token expired, session
+        // signed_out: the server signed this connection out (token expired, session
         // revoked, or a future reason). Private subscriptions are gone; a fresh auth on this socket restores
         // them.
         const raw = typeof frame["reason"] === "string" && frame["reason"] !== "" ? frame["reason"] : "unknown";
