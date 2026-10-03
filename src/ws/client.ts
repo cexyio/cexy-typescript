@@ -874,6 +874,10 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
         // them.
         const raw = typeof frame["reason"] === "string" && frame["reason"] !== "" ? frame["reason"] : "unknown";
         this.#token = null;
+        if (raw === "key_revoked" || raw === "key_expired") this.#keyAuth = false;
+        // Already signed out: session.revoked {current: true} precedes signed_out {reason: revoked}, and the pair
+        // is one sign-out.
+        if (!this.#authed) return;
         if (raw === "revoked") {
           this.#signedOut("session_revoked");
           this.emit("authLost", {
@@ -885,7 +889,6 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
           this.#signedOut("token_expired");
         } else {
           if (raw === "key_revoked" || raw === "key_expired") {
-            this.#keyAuth = false;
             this.#signedOut(raw);
           } else {
             this.#signedOut("signed_out", raw);
