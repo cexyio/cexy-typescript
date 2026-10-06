@@ -1718,7 +1718,7 @@ export interface components {
          *     A closed enum so a client can render each kind deliberately — an icon, a colour, a link — rather than pattern-matching on prose that may be reworded.
          * @enum {string}
          */
-        NotificationKind: "deposit_detected" | "deposit_credited" | "withdrawal_requested" | "withdrawal_sent" | "withdrawal_completed" | "withdrawal_failed" | "order_filled" | "security" | "listing_decision" | "announcement";
+        NotificationKind: "deposit_detected" | "deposit_credited" | "withdrawal_requested" | "withdrawal_sent" | "withdrawal_completed" | "withdrawal_failed" | "order_filled" | "order_closed" | "security" | "listing_decision" | "announcement";
         /** @description An in-app notice. */
         NotificationResponse: {
             /** @description One or two sentences. */
