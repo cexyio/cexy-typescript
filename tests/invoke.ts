@@ -43,6 +43,7 @@ export const INVOKE: Record<OperationId, (c: CexyClient) => Promise<unknown>> = 
     c.trading.placeOrder({ symbol: "BTC/USDT", side: "buy", type: "limit", price: "60000.00", quantity: "0.001" }),
   cancel_order: (c) => c.trading.cancelOrder("ord_1"),
   cancel_all: (c) => c.trading.cancelAll({ symbol: "BTC/USDT" }),
+  cancel_all_after: (c) => c.trading.cancelAllAfter({ symbol: "BTC/USDT", timeoutMs: 10_000 }),
   join_pool: (c) => c.pools.join("BTC/USDT", { base_amount: "0.1", quote_amount: "6000" }),
   exit_pool: (c) => c.pools.exit("BTC/USDT", { shares: "1.5" }),
   markets: (c) => c.futures.markets(),

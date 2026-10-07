@@ -79,6 +79,7 @@ export const OPERATIONS = {
   place_order: op("POST", "/api/v1/trading/orders", "api_key", "trade", "trading.placeOrder"),
   cancel_order: op("DELETE", "/api/v1/trading/orders/{order_id}", "api_key", "trade", "trading.cancelOrder"),
   cancel_all: op("POST", "/api/v1/trading/orders/cancel-all", "api_key", "trade", "trading.cancelAll"),
+  cancel_all_after: op("POST", "/api/v1/trading/orders/cancel-all-after", "api_key", "trade", "trading.cancelAllAfter"),
   // Liquidity pools (trade)
   join_pool: op("POST", "/api/v1/pools/{symbol}/join", "api_key", "trade", "pools.join"),
   exit_pool: op("POST", "/api/v1/pools/{symbol}/exit", "api_key", "trade", "pools.exit"),

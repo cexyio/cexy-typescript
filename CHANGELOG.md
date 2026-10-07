@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `trading.cancelAllAfter({ symbol, timeoutMs })`: the dead-man switch (`POST /api/v1/trading/orders/cancel-all-after`).
+  `symbol` is required (a market or an explicit `null` for every market; empty or blank throws), `timeoutMs` must be
+  a non-negative integer (0 disarms; the server checks the range). Repeat-safe, so it is retried like `cancelAll`.
+- Error code `DEAD_MAN_NOT_ARMED` (409, not retryable, `details.market`) is a known code and maps to `ConflictError`.
+
 ## [0.1.0-dev.14] (2026-10-07)
 
 ### Added

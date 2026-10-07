@@ -82,10 +82,10 @@ const IDEMPOTENT_OPS: ReadonlySet<OperationId> = new Set<OperationId>(["join_poo
 
 /**
  * Mutations `request()` may retry: pool join/exit (the server honours their `Idempotency-Key`)
- * and cancel-all (naturally repeatable). Any other mutation sent through `request()` is never
+ * cancel-all and cancel-all-after (naturally repeatable). Any other mutation sent through `request()` is never
  * retried; `placeOrder` and `cancelOrder` have their own policies on top of `attempt()`.
  */
-const REPEAT_SAFE_MUTATIONS: ReadonlySet<OperationId> = new Set<OperationId>(["join_pool", "exit_pool", "cancel_all"]);
+const REPEAT_SAFE_MUTATIONS: ReadonlySet<OperationId> = new Set<OperationId>(["join_pool", "exit_pool", "cancel_all", "cancel_all_after"]);
 
 const BACKOFF_BASE_MS = 500;
 const BACKOFF_MAX_MS = 10_000;
