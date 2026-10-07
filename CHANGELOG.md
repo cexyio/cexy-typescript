@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-dev.15] (2026-10-07)
+
 ### Added
 - `trading.cancelAllAfter({ symbol, timeoutMs })`: the dead-man switch (`POST /api/v1/trading/orders/cancel-all-after`).
   `symbol` is required (a market or an explicit `null` for every market; empty or blank throws), `timeoutMs` must be
