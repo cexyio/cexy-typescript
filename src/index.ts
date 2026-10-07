@@ -47,6 +47,7 @@ export {
   TradingResource,
   WalletResource,
   type CancelAllParams,
+  type CancelAllAfterParams,
   type FuturesHistoryEnd,
   type FuturesIterateOptions,
   type PlaceOrderResult,

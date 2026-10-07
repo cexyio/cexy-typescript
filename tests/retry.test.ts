@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CexyConnectionError,
   CexyTimeoutError,
+  CexyConfigError,
   ConflictError,
   OrderStateUnknownError,
   ValidationError,
@@ -162,6 +163,67 @@ describe("mutations", () => {
     expect(calls[0]!.body).toEqual({});
     await client.trading.cancelAll({ symbol: "ETH/USDT" });
     expect(calls[1]!.body).toEqual({ symbol: "ETH/USDT" });
+  });
+});
+
+describe("cancelAllAfter", () => {
+  const resp = { armed: true, deadline: "2026-10-07T12:00:10Z", server_time: "2026-10-07T12:00:00Z", symbol: "BTC/USDT", timeout_ms: 10000 };
+
+  it("sends symbol and timeout_ms to the right path, and decodes the response", async () => {
+    const { client, calls } = testClient({ fallback: ok(resp) });
+    const out = await client.trading.cancelAllAfter({ symbol: "BTC/USDT", timeoutMs: 10_000 });
+    expect(out).toEqual(resp);
+    expect(calls[0]!.method).toBe("POST");
+    expect(calls[0]!.url.pathname).toBe("/api/v1/trading/orders/cancel-all-after");
+    expect(calls[0]!.body).toEqual({ timeout_ms: 10000, symbol: "BTC/USDT" });
+    expect(calls[0]!.headers.has("Idempotency-Key")).toBe(false);
+  });
+
+  it("symbol: null sends an explicit null (every market)", async () => {
+    const { client, calls } = testClient({ fallback: ok({ ...resp, symbol: null }) });
+    const out = await client.trading.cancelAllAfter({ symbol: null, timeoutMs: 10_000 });
+    expect(out.symbol).toBeNull();
+    expect(calls[0]!.body).toEqual({ timeout_ms: 10000, symbol: null });
+    expect(Object.prototype.hasOwnProperty.call(calls[0]!.body, "symbol")).toBe(true);
+  });
+
+  it("requires an explicit symbol; blank strings throw", async () => {
+    const { client, calls } = testClient({ fallback: ok(resp) });
+    // @ts-expect-error - symbol is required
+    await expect(client.trading.cancelAllAfter({ timeoutMs: 10_000 })).rejects.toThrow(/symbol/);
+    // @ts-expect-error - params are required
+    await expect(client.trading.cancelAllAfter()).rejects.toThrow();
+    // @ts-expect-error - undefined is not null
+    await expect(client.trading.cancelAllAfter({ symbol: undefined, timeoutMs: 10_000 })).rejects.toThrow(/symbol/);
+    await expect(client.trading.cancelAllAfter({ symbol: "", timeoutMs: 10_000 })).rejects.toBeInstanceOf(CexyConfigError);
+    await expect(client.trading.cancelAllAfter({ symbol: "  ", timeoutMs: 10_000 })).rejects.toThrow(/symbol/);
+    expect(calls.length).toBe(0);
+  });
+
+  it("timeoutMs 0 disarms (sent as 0); the server owns the range", async () => {
+    const { client, calls } = testClient({ fallback: ok({ ...resp, armed: false, deadline: null, timeout_ms: 0 }) });
+    const out = await client.trading.cancelAllAfter({ symbol: "BTC/USDT", timeoutMs: 0 });
+    expect(out.armed).toBe(false);
+    expect(calls[0]!.body).toEqual({ timeout_ms: 0, symbol: "BTC/USDT" });
+    await client.trading.cancelAllAfter({ symbol: null, timeoutMs: 1 });
+    expect(calls[1]!.body).toEqual({ timeout_ms: 1, symbol: null });
+  });
+
+  it("rejects a negative, NaN, infinite, fractional, non-number or missing timeoutMs", async () => {
+    const { client, calls } = testClient({ fallback: ok(resp) });
+    for (const t of [-1, NaN, Infinity, 1.5, "10000", null, undefined]) {
+      // @ts-expect-error - deliberately wrong types
+      await expect(client.trading.cancelAllAfter({ symbol: null, timeoutMs: t })).rejects.toBeInstanceOf(CexyConfigError);
+    }
+    expect(calls.length).toBe(0);
+  });
+
+  it("is retried after a connection error (repeat-safe)", async () => {
+    const { client, calls } = testClient({ replies: [networkError()], fallback: ok(resp) });
+    const out = await client.trading.cancelAllAfter({ symbol: "BTC/USDT", timeoutMs: 10_000 });
+    expect(out.armed).toBe(true);
+    expect(calls.length).toBe(2);
+    expect(calls[1]!.body).toEqual(calls[0]!.body);
   });
 });
 

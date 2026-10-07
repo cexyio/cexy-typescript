@@ -748,6 +748,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/trading/orders/cancel-all-after": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Arms the dead-man switch: unless armed again within `timeout_ms`, every open order (and
+         * @description untriggered stop) in scope is cancelled, as by `POST /trading/orders/cancel-all`.
+         *
+         *     Arm it again before it runs out to keep quoting — for example every 2 seconds with a 10-second timeout — and if the program quoting stops, its orders are cancelled about a second after the deadline. Once fired, the switch is cleared: quoting again needs a new arm. `timeout_ms` of `0` disarms it. A per-market switch and the all-markets switch are separate, and each fires on its own.
+         *
+         *     A halt does not stop it: cancelling is always allowed. Accounts the exchange quotes from must keep one armed for each market they place orders in, and are refused with `DEAD_MAN_NOT_ARMED` (409, `details.market`) otherwise; such a refusal means "stop quoting", not "retry".
+         */
+        post: operations["cancel_all_after"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/trading/orders/history": {
         parameters: {
             query?: never;
@@ -1054,6 +1078,42 @@ export interface components {
             sequence: number;
             total: components["schemas"]["Amount"];
         };
+        /** @description Arms, re-arms or disarms the dead-man switch. */
+        CancelAllAfterRequest: {
+            /**
+             * @description One market's orders only. Omitted or `null`, the switch covers every market. A per-market switch and the all-markets switch are separate: each fires on its own.
+             * @example BTC/USDT
+             */
+            symbol?: string | null;
+            /**
+             * Format: int64
+             * @description Milliseconds from now after which the open orders in scope are cancelled, unless the switch is armed again first: from 5000 to 600000. `0` disarms.
+             * @example 10000
+             */
+            timeout_ms: number;
+        };
+        /** @description The dead-man switch, as just set. */
+        CancelAllAfterResponse: {
+            /** @description Whether a deadline is now armed for this scope. `false` after a disarm. */
+            armed: boolean;
+            /**
+             * Format: date-time
+             * @description When the orders are cancelled unless armed again. `null` when disarmed.
+             */
+            deadline?: string | null;
+            /**
+             * Format: date-time
+             * @description The server's clock when the switch was set, to measure the deadline against.
+             */
+            server_time: string;
+            /** @description The market it covers, or `null` for every market. */
+            symbol?: string | null;
+            /**
+             * Format: int64
+             * @description The timeout asked for, in milliseconds.
+             */
+            timeout_ms: number;
+        };
         /** @description Cancels every open order, optionally within one market. */
         CancelAllRequest: {
             /** @description Limit the cancellation to one market. Omitted or `null`, every market's open orders are cancelled. */
@@ -1242,7 +1302,7 @@ export interface components {
          *     Serialized as `SCREAMING_SNAKE_CASE`. Adding a variant is backwards-compatible; renaming or removing one is a breaking API change.
          * @enum {string}
          */
-        ErrorCode: "VALIDATION_FAILED" | "MALFORMED_REQUEST" | "INVALID_CURSOR" | "PRECISION_EXCEEDED" | "BELOW_MINIMUM" | "ABOVE_MAXIMUM" | "INVALID_ADDRESS" | "MEMO_REQUIRED" | "UNAUTHENTICATED" | "INVALID_CREDENTIALS" | "TOKEN_EXPIRED" | "SESSION_REVOKED" | "TWO_FACTOR_REQUIRED" | "TWO_FACTOR_INVALID" | "FRESH_TWO_FACTOR_REQUIRED" | "FORBIDDEN" | "API_KEY_NOT_ALLOWED" | "KEY_NOT_SIGNABLE" | "SIGNATURE_EXPIRED" | "NONCE_REUSED" | "SIGNATURE_REQUIRED" | "FUTURES_RESTRICTED" | "ACCOUNT_FROZEN" | "ACCOUNT_ON_HOLD" | "EMAIL_NOT_VERIFIED" | "REGION_BLOCKED" | "JURISDICTION_BLOCKED" | "NOT_FOUND" | "METHOD_NOT_ALLOWED" | "ALREADY_EXISTS" | "INVALID_STATE" | "IDEMPOTENCY_KEY_CONFLICT" | "WINDOW_OPEN" | "EVIDENCE_CONTRADICTS" | "AMOUNT_MISMATCH" | "CONCURRENT_MODIFICATION" | "INSUFFICIENT_FUNDS" | "INSUFFICIENT_FEE_FUNDS" | "MARKET_UNAVAILABLE" | "DEPOSIT_DISABLED" | "WITHDRAWAL_DISABLED" | "SELF_TRADE_BLOCKED" | "LIMIT_EXCEEDED" | "PRICE_UNAVAILABLE" | "RATE_LIMITED" | "INTERNAL" | "SERVICE_UNAVAILABLE" | "UNDER_MAINTENANCE" | "ENGINE_OVERLOADED";
+        ErrorCode: "VALIDATION_FAILED" | "MALFORMED_REQUEST" | "INVALID_CURSOR" | "PRECISION_EXCEEDED" | "BELOW_MINIMUM" | "ABOVE_MAXIMUM" | "INVALID_ADDRESS" | "MEMO_REQUIRED" | "UNAUTHENTICATED" | "INVALID_CREDENTIALS" | "TOKEN_EXPIRED" | "SESSION_REVOKED" | "TWO_FACTOR_REQUIRED" | "TWO_FACTOR_INVALID" | "FRESH_TWO_FACTOR_REQUIRED" | "FORBIDDEN" | "API_KEY_NOT_ALLOWED" | "KEY_NOT_SIGNABLE" | "SIGNATURE_EXPIRED" | "NONCE_REUSED" | "SIGNATURE_REQUIRED" | "FUTURES_RESTRICTED" | "ACCOUNT_FROZEN" | "ACCOUNT_ON_HOLD" | "EMAIL_NOT_VERIFIED" | "REGION_BLOCKED" | "JURISDICTION_BLOCKED" | "NOT_FOUND" | "METHOD_NOT_ALLOWED" | "ALREADY_EXISTS" | "INVALID_STATE" | "IDEMPOTENCY_KEY_CONFLICT" | "WINDOW_OPEN" | "EVIDENCE_CONTRADICTS" | "AMOUNT_MISMATCH" | "CONCURRENT_MODIFICATION" | "DEAD_MAN_NOT_ARMED" | "INSUFFICIENT_FUNDS" | "INSUFFICIENT_FEE_FUNDS" | "MARKET_UNAVAILABLE" | "DEPOSIT_DISABLED" | "WITHDRAWAL_DISABLED" | "SELF_TRADE_BLOCKED" | "LIMIT_EXCEEDED" | "PRICE_UNAVAILABLE" | "RATE_LIMITED" | "INTERNAL" | "SERVICE_UNAVAILABLE" | "UNDER_MAINTENANCE" | "ENGINE_OVERLOADED";
         /** @description The top-level error envelope. */
         ErrorResponse: {
             error: components["schemas"]["ErrorBody"];
@@ -3586,7 +3646,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description That client order id is already in use (ALREADY_EXISTS). Answered before any market, body or funds check; details carry client_order_id and the existing order's order_id and status */
+            /** @description That client order id is already in use (ALREADY_EXISTS). Answered before any market, body or funds check, and before the dead-man check; details carry client_order_id and the existing order's order_id and status. Or (`DEAD_MAN_NOT_ARMED`, details.market) a house account has no live cancel-all-after deadline for this market */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3761,6 +3821,50 @@ export interface operations {
             };
             /** @description Over 30 calls a minute for this account; `details.retry_after_seconds` says when to retry */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    cancel_all_after: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CancelAllAfterRequest"];
+            };
+        };
+        responses: {
+            /** @description The switch as set */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["CancelAllAfterResponse"];
+                    };
+                };
+            };
+            /** @description `timeout_ms` is neither 0 nor between 5000 and 600000 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description No such market */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

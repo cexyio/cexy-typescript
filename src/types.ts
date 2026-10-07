@@ -17,6 +17,8 @@ export type Balance = S["BalanceResponse"];
 export type HeldIncoming = S["HeldIncomingResponse"];
 export type CancelAllRequest = S["CancelAllRequest"];
 export type CancelAllResult = S["CancelAllResponse"];
+/** Result of `trading.cancelAllAfter`: the dead-man switch as just set. */
+export type CancelAllAfterResult = S["CancelAllAfterResponse"];
 /** Why one order could not be cancelled (`CancelAllResult.failures`). */
 export type CancelFailure = S["CancelFailureResponse"];
 /** Why a `cancelAll({ ..., untilDone: true })` loop ended. */

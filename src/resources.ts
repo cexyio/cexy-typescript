@@ -21,6 +21,7 @@ import type {
   ApiKey,
   Asset,
   Balance,
+  CancelAllAfterResult,
   CancelAllResult,
   CancelAllUntilDoneResult,
   CancelFailure,
@@ -331,6 +332,16 @@ export interface CancelAllParams {
   timeBudgetMs?: number;
 }
 
+/**
+ * `cancelAllAfter` target and timeout. `symbol` is required: a market such as `"BTC/USDT"`, or
+ * `null` for EVERY market (only when passed explicitly). `timeoutMs` is `0` (disarm) or the
+ * number of milliseconds the server waits; the server checks the range (5000..600000).
+ */
+export interface CancelAllAfterParams {
+  symbol: string | null;
+  timeoutMs: number;
+}
+
 /** Failure codes that clear up on their own: an order still being placed, a state read failure. */
 const CANCEL_RETRY_CODES = new Set(["INVALID_STATE", "SERVICE_UNAVAILABLE"]);
 /** Waits after rounds without progress, in seconds; the last value repeats. */
@@ -454,6 +465,47 @@ export class TradingResource extends Resource {
         throw err;
       }
     }
+  }
+
+  /**
+   * Dead-man switch: arms, re-arms or disarms "cancel every open order in scope unless armed
+   * again within `timeoutMs`". `cancelAllAfter({ symbol: "BTC/USDT", timeoutMs: 10_000 })` covers
+   * one market; `symbol: null` covers every market and must be passed explicitly. Omitting
+   * `symbol`, or passing an empty or blank string, throws `CexyConfigError` (the server treats
+   * both as "every market", so the SDK never lets that happen by accident). `timeoutMs: 0`
+   * disarms. The SDK checks only that `timeoutMs` is a non-negative integer (so a bad value can
+   * never silently become 0); the server owns the range, 5000..600000, and answers 400
+   * `VALIDATION_FAILED` otherwise. Returns `{ armed, deadline, server_time, symbol, timeout_ms }`.
+   *
+   * Keeping it armed: arm about every 2 s with a 10 s timeout. Take your local deadline from
+   * the moment the call STARTED (retries only make the server's deadline later), and never
+   * compare the local clock with `deadline`: use `server_time` only to measure it. When a
+   * switch fires it cancels the orders and is cleared: quoting again needs a new arm. A
+   * per-market switch and the all-markets switch are separate (each fires on its own), and
+   * `timeoutMs: 0` disarms only the scope given. At most 50 deadlines per account.
+   *
+   * The call is repeat-safe, so it follows the normal retry policy (network errors, 429 after
+   * Retry-After, 5xx) and returns only after its retries end; no Idempotency-Key is sent. An
+   * attempt still in flight can land after a later disarm and arm again: after a retried arm,
+   * disarm once more if the switch must be off. No endpoint reads the switch.
+   *
+   * An account that must keep a switch armed is refused on `placeOrder` with
+   * `DEAD_MAN_NOT_ARMED` (409, `details.market`, not retryable) when none is live for that
+   * market. That means stop quoting and arm again: never retry the refused order.
+   */
+  async cancelAllAfter(params: CancelAllAfterParams, opts?: RequestOptions): Promise<CancelAllAfterResult> {
+    const p: unknown = params;
+    const has = (k: string) => !!p && typeof p === "object" && Object.prototype.hasOwnProperty.call(p, k);
+    const symbol: unknown = has("symbol") ? (p as CancelAllAfterParams).symbol : undefined;
+    const timeoutMs: unknown = has("timeoutMs") ? (p as CancelAllAfterParams).timeoutMs : undefined;
+    let body: { timeout_ms: number; symbol: string | null };
+    if (typeof timeoutMs !== "number" || !Number.isInteger(timeoutMs) || timeoutMs < 0) {
+      throw new CexyConfigError("cancelAllAfter(): timeoutMs must be a non-negative integer (0 disarms)");
+    }
+    if (typeof symbol === "string" && symbol.trim() !== "") body = { timeout_ms: timeoutMs, symbol };
+    else if (symbol === null && has("symbol")) body = { timeout_ms: timeoutMs, symbol: null };
+    else throw new CexyConfigError('cancelAllAfter(): pass { symbol: "BASE/QUOTE" }, or { symbol: null } for every market');
+    return this.data<CancelAllAfterResult>({ op: "cancel_all_after", body }, opts);
   }
 
   /**

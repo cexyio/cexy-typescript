@@ -87,6 +87,22 @@ describe("conformance/errors fixtures", () => {
     expect((err as CexyApiError).requestId).toBe("req_test_2");
     expect(calls.length).toBe(1);
   });
+
+  it("dead_man_not_armed: ConflictError, not retryable, no cid recovery, details kept", async () => {
+    const f = fixture("dead_man_not_armed");
+    expect(f.expect.retry).toBe(false);
+    expect(isKnownErrorCode(f.expect.error_code)).toBe(true);
+    const { client, calls } = testClient({ replies: [reply(f)], fallback: ok({ order: {}, fills: [] }) });
+    const err = await client.trading
+      .placeOrder({ symbol: "BTC/USDT", side: "buy", type: "limit", price: "1", quantity: "1.5" })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConflictError);
+    expect((err as CexyApiError).code).toBe("DEAD_MAN_NOT_ARMED");
+    expect((err as CexyApiError).retryable).toBe(false);
+    expect((err as CexyApiError).details).toEqual(f.expect.details);
+    expect(calls.length).toBe(1);
+    expect(calls.some((c) => c.method === "GET")).toBe(false);
+  });
 });
 
 describe("error mapping", () => {

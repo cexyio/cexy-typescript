@@ -89,6 +89,30 @@ would pass the budget the loop stops without calling, with `last_error_code: "RA
 A non-retryable error (e.g. a key without the trade scope) throws `CancelAllInterruptedError` with the error
 and the partial result. The server allows 30 cancel-all calls per minute per account.
 
+### Dead-man switch
+
+`cancelAllAfter` arms a timer that cancels every open order in its scope unless it is armed again first:
+
+```ts
+await cexy.trading.cancelAllAfter({ symbol: "BTC/USDT", timeoutMs: 10_000 }); // one market
+await cexy.trading.cancelAllAfter({ symbol: null, timeoutMs: 10_000 });       // every market, explicitly
+await cexy.trading.cancelAllAfter({ symbol: "BTC/USDT", timeoutMs: 0 });      // disarm that scope
+```
+
+- `symbol` is required: a market, or `null` for every market. Omitting it, or passing `""` or blank text, throws
+  (the server reads all of those as "every market"). `timeoutMs` must be a non-negative integer; the server owns
+  the range (0 disarms, otherwise 5000 to 600000) and answers 400 for anything else.
+- Arm about every 2 s with a 10 s timeout. Take your local deadline from when the call *started* (a retry only
+  makes the server's deadline later) and never compare the local clock with `deadline`.
+- A switch that fires cancels the orders and is cleared: quoting again needs a new arm.
+- A per-market switch and the all-markets switch are separate; `0` disarms only the scope given. At most 50
+  deadlines per account.
+- The call is repeat-safe and is retried like `cancelAll`. An attempt still in flight can land after a later
+  disarm and arm again: after a retried arm, disarm once more if it must be off.
+- No endpoint reads the switch.
+- When an account must keep a switch armed, `placeOrder` is refused with `DEAD_MAN_NOT_ARMED` (409,
+  `details.market`, not retryable). Stop quoting and arm again; never retry the refused order.
+
 Give both `apiKey` and `apiSecret`, or neither: passing only one throws at construction.
 
 | Namespace | Methods | Scope |
@@ -100,7 +124,7 @@ Give both `apiKey` and `apiSecret`, or neither: passing only one throws at const
 | `exports` | `deposits`, `ledger`, `orders`, `trades`, `withdrawals` (CSV text) | read |
 | `wallet` | `deposits`, `deposit`, `withdrawals`, `withdrawal`, `withdrawalAddresses`, `depositAddress` (+ iterators) | read |
 | `trading` | `openOrders`, `order`, `orderByClientId`, `orderHistory`, `trades` (+ iterators) | read |
-| `trading` | `placeOrder`, `cancelOrder`, `cancelAll` | trade |
+| `trading` | `placeOrder`, `cancelOrder`, `cancelAll`, `cancelAllAfter` | trade |
 | `pools` | `join`, `exit` | trade |
 
 `wallet.depositAddress({ asset, network })` **creates** the address on the first call for that
