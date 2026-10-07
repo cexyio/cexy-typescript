@@ -678,7 +678,7 @@ export interface paths {
          * Places an order.
          * @description Funds are reserved before the order reaches the book, so a matched order can never be unfunded. On a buy the reservation covers the value plus the **taker** fee, which is the worst case — a maker fill releases the difference.
          *
-         *     Set `client_order_id` to make a retry safe: it is unique per account, so a repeat is refused before any funds move, and `GET /trading/orders/by-client-id/{client_order_id}` recovers the outcome. `Idempotency-Key` is not honoured here.
+         *     Set `client_order_id` to make a retry safe: it is unique per account, so a repeat is refused before any funds move, and `GET /trading/orders/by-client-id/{client_order_id}` recovers the outcome. A retry with a `client_order_id` already used always gets 409 `ALREADY_EXISTS` with the existing order's `order_id` and `status` in `details`, even if the market has since paused or the retry's body differs: the id identifies the intent. `Idempotency-Key` is not honoured here.
          */
         post: operations["place_order"];
         delete?: never;
@@ -3586,7 +3586,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description That client order id is already in use */
+            /** @description That client order id is already in use (ALREADY_EXISTS). Answered before any market, body or funds check; details carry client_order_id and the existing order's order_id and status */
             409: {
                 headers: {
                     [name: string]: unknown;
