@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-dev.14] (2026-10-07)
+
+### Added
+- `NotificationKind` gains `"order_closed"` (cexy-api-spec `b12b03d`, order-close sync).
+
+### Changed
+- `LedgerEntryKind` drops 7 kinds that ledger entries never carry: `trade_fee_revenue`,
+  `withdrawal_fee_revenue`, `withdrawal_fee_revenue_reversal`, `futures_transfer_fee_revenue`,
+  `futures_hyperliquid_cost`, `futures_transfer_discrepancy`, `exchange_capital`. The type stays open, so an
+  unknown value still decodes.
+
+### Fixed
+- WebSocket: when the connection's own session is revoked, the server sends `session.revoked {current: true}`
+  and then `signed_out {reason: revoked}`. The client treated both as sign-outs and emitted `auth_changed`
+  and `auth_lost` twice. `signed_out` now changes nothing when the connection is already signed out, apart
+  from forgetting the token. Shared conformance case: `session_revoked_then_signed_out_once`.
+
 ## [0.1.0-dev.13] (2026-10-02)
 
 ### Added
@@ -260,7 +277,6 @@ Synced with the API's H-1 release (spec in cexy-api-spec at fc3ce5c).
 - `Idempotency-Key` is sent only on pool join/exit, where the server honours it. Orders, cancels and
   cancel-all no longer send it (the server ignored it there); their safety is unchanged
   (`client_order_id` and the cancel rules).
-
 
 ## [0.1.0-dev.4]
 
