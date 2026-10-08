@@ -732,8 +732,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Cancels every open order, and every stop order that has not triggered, optionally within
-         * @description one market.
+         * Cancels every open order and untriggered stop, optionally in one market.
+         * @description Every open order, and every stop order that has not triggered, is cancelled; with `symbol`, only that market's.
          *
          *     Best-effort: a failure on one order does not stop the rest, and every outcome is reported. A panic-button endpoint that stops at the first problem is worse than useless. A stop waiting for its trigger (`pending_trigger`) is cancelled too and its reservation released, so nothing fires into the market after the call.
          *
@@ -758,10 +758,10 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Arms the dead-man switch: unless armed again within `timeout_ms`, every open order (and
-         * @description untriggered stop) in scope is cancelled, as by `POST /trading/orders/cancel-all`.
+         * Arms or disarms the dead-man switch (cancel-all-after).
+         * @description Unless armed again within `timeout_ms`, every open order (and untriggered stop) in scope is cancelled, as by `POST /trading/orders/cancel-all`.
          *
-         *     Arm it again before it runs out to keep quoting — for example every 2 seconds with a 10-second timeout — and if the program quoting stops, its orders are cancelled about a second after the deadline. Once fired, the switch is cleared: quoting again needs a new arm. `timeout_ms` of `0` disarms it. A per-market switch and the all-markets switch are separate, and each fires on its own.
+         *     Arm it again before it runs out to keep quoting — for example every 2 seconds with a 10-second timeout — and if the program quoting stops, its orders are cancelled about a second after the deadline. Once fired, the switch is cleared: quoting again needs a new arm. `timeout_ms` of `0` disarms it. A per-market switch and the all-markets switch are separate, and each fires on its own. Omit `symbol` for the all-markets switch; an empty `symbol` is refused. An account holds at most 50 armed deadlines. An account that may not trade (a suspended house account, for one) cannot arm or re-arm, only disarm.
          *
          *     A halt does not stop it: cancelling is always allowed. Accounts the exchange quotes from must keep one armed for each market they place orders in, and are refused with `DEAD_MAN_NOT_ARMED` (409, `details.market`) otherwise; such a refusal means "stop quoting", not "retry".
          */
@@ -1081,7 +1081,7 @@ export interface components {
         /** @description Arms, re-arms or disarms the dead-man switch. */
         CancelAllAfterRequest: {
             /**
-             * @description One market's orders only. Omitted or `null`, the switch covers every market. A per-market switch and the all-markets switch are separate: each fires on its own.
+             * @description One market's orders only. Omitted or `null`, the switch covers every market; an empty string is refused (400). A per-market switch and the all-markets switch are separate: each fires on its own.
              * @example BTC/USDT
              */
             symbol?: string | null;
@@ -1103,7 +1103,7 @@ export interface components {
             deadline?: string | null;
             /**
              * Format: date-time
-             * @description The server's clock when the switch was set, to measure the deadline against.
+             * @description The server's time after the deadline was stored, to measure the deadline against.
              */
             server_time: string;
             /** @description The market it covers, or `null` for every market. */
@@ -3854,8 +3854,17 @@ export interface operations {
                     };
                 };
             };
-            /** @description `timeout_ms` is neither 0 nor between 5000 and 600000 */
+            /** @description VALIDATION_FAILED: `timeout_ms` is neither 0 nor between 5000 and 600000; `symbol` is empty (omit it for all markets); or arming would exceed the account's 50 active deadlines */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The account may not trade (ACCOUNT_ON_HOLD for a restricted account), so it cannot arm; disarming is allowed */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
