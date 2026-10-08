@@ -188,6 +188,10 @@ try {
 - Timeout per attempt: `timeoutMs` (default 10 s). Retries: `maxRetries` (default 3), exponential backoff with full jitter.
 - Retried: network errors, timeouts and responses with `retryable: true` (and 409 `CONCURRENT_MODIFICATION`).
   A 4xx is never retried except 429 and 409 `CONCURRENT_MODIFICATION`, whatever its body says.
+- After a 429 with a wait hint, the client-side rate limiter holds every other request of the client for
+  that wait (at most 120 s), not only the retried one. A key that keeps sending through its own limit counts
+  against its IP's failed-key limit (120 a minute) and can lock out every other key on that IP. Market makers:
+  run the cancel/risk key from its own egress IP; a separate key on the same IP is not isolated.
 - 429 waits at least `Retry-After` / `details.retry_after_seconds`. Server wait hints are untrusted: unusable
   values are ignored, and a hint longer than 120 s (`MAX_SERVER_WAIT_MS`) is never waited: the call fails at
   once with `RateLimitError`, whose `retryAfterMs` still has the server's value. The client-side rate limiter
