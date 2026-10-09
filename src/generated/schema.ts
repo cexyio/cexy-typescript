@@ -678,6 +678,8 @@ export interface paths {
          * Places an order.
          * @description Funds are reserved before the order reaches the book, so a matched order can never be unfunded. On a buy the reservation covers the value plus the **taker** fee, which is the worst case — a maker fill releases the difference.
          *
+         *     A market buy by `quote_quantity` (a budget) reserves exactly the budget, and the budget includes the taker fee: `filled_quote_quantity + fee_paid <= quote_quantity`. It needs `quote_quantity >= min_notional` and no more decimals than the market's prices (`PRECISION_EXCEEDED`). Its `quantity` and `remaining_quantity` are `0`. It ends `filled` when what is left cannot buy one lot at the last fill price, otherwise `cancelled` with `Insufficient liquidity to fill the remainder` (or `Budget exhausted` with no fill).
+         *
          *     Set `client_order_id` to make a retry safe: it is unique per account, so a repeat is refused before any funds move, and `GET /trading/orders/by-client-id/{client_order_id}` recovers the outcome. A retry with a `client_order_id` already used always gets 409 `ALREADY_EXISTS` with the existing order's `order_id` and `status` in `details`, even if the market has since paused or the retry's body differs: the id identifies the intent. `Idempotency-Key` is not honoured here.
          */
         post: operations["place_order"];
