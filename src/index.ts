@@ -32,7 +32,7 @@ export {
 } from "./errors.js";
 export { assertAmountFields, isAmount, type Amount } from "./amounts.js";
 export { RateLimiter, type RateLimiterOptions, type RateLimiterState } from "./limiter.js";
-export { isRetryable, type FetchLike, type RequestOptions, type RetryInfo } from "./http.js";
+export { ORDER_ACTIONS_LIMIT, isRetryable, type FetchLike, type RequestOptions, type RetryInfo } from "./http.js";
 export { OPERATIONS, type OperationAuth, type OperationId, type OperationInfo, type OperationScope } from "./operations.js";
 export { paginate, type IterateOptions } from "./pagination.js";
 export {
@@ -52,6 +52,23 @@ export {
   type FuturesIterateOptions,
   type PlaceOrderResult,
 } from "./resources.js";
+export {
+  BatchResponseError,
+  CLIENT_ORDER_ID_PATTERN,
+  MAX_BATCH_ORDERS,
+  MAX_CANCEL_ENTRIES,
+  batchPlaceErrorInfo,
+  newClientOrderId,
+  type BatchPlaceErrorInfo,
+  type BatchCancelResult,
+  type BatchOrderInput,
+  type BatchOrderOutcome,
+  type BatchPlaceResult,
+  type CancelEntryOutcome,
+  type CancelOrderEntry,
+  type CancelOutcomeKind,
+  type PlaceOutcomeKind,
+} from "./batch.js";
 export * from "./types.js";
 export { isLedgerReference } from "./ledger.js";
 export {

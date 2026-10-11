@@ -139,6 +139,65 @@ first (millisecond precision), with no sender identity. An entry disappears once
 released (the amount moves to `available`) or cancelled by the exchange. It is always an array
 (`[]` when none, including from servers that predate the field).
 
+### Batch orders
+
+Place up to 20 orders in one market with one request, or cancel up to 50:
+
+```ts
+const res = await cexy.trading.placeOrders("BTC/USDT", [
+  { side: "buy", type: "limit", price: "64000", quantity: "0.01" },
+  { side: "sell", type: "limit", price: "66000", quantity: "0.01" },
+]);
+for (const o of res.results) {          // request order
+  console.log(o.index, o.client_order_id, o.outcome, o.order_id, o.status, o.error);
+}
+
+await cexy.trading.cancelOrders([{ order_id: "..." }, { client_order_id: "..." }]);
+await cexy.trading.cancelOrderByClientId("my-id-1");
+```
+
+- Each order is placed (or cancelled) on its own: the batch is **not atomic**, and one refusal does
+  not stop the rest. Each result's `outcome` is `placed` (or `cancelled`), `failed` with `error`,
+  `recovered` or `unknown` (below). The counts on the result are computed from the results.
+- Every order carries a `client_order_id`; one (a UUID, from `newClientOrderId()`) is generated for
+  each order without one. Your own ids must be 1 to 64 characters of `A-Z a-z 0-9 _ - . :` (not `.`
+  or `..`), distinct within the batch, and unique per account across all markets.
+- **Supply and save your own `client_order_id`s before the call if you need to reconcile.** Make them
+  with `newClientOrderId()` and store them first: if you abort the call, or abandon its promise, they
+  are your only way to find the orders it may have placed.
+- **Retries:** the request body is built once; a retry after a timeout resends it unchanged, and the
+  server refuses every id it already placed, so nothing is placed twice. Such an order comes back as
+  `recovered` with its `order_id` and `status`. A recovered order counts as placed unless its status
+  is `rejected`, even if it ended `cancelled` with nothing filled: read `status` before acting. A
+  `rejected` status means the server refused it for
+  funds and its id is spent: do not place it again under that id. `unknown` means its state could
+  not be read; it was not placed again (look it up with `orderByClientId`). A cancel that a retry
+  finds already closed is looked up and comes back as `recovered` with its current status.
+- An item error that still names an order (`MARKET_UNAVAILABLE` with `details.order_id`, when the
+  market stopped while matching) means the order exists: it is `recovered` with its status, on any
+  attempt. An item `INTERNAL` may follow a committed order, so it is looked up once (`recovered` or
+  `unknown`).
+- Every network error counts as "the server may have acted" (fetch cannot tell a failed connect from a
+  lost answer), as does any 5xx except 501 and 503 (Cloudflare's 520 and 524 included) and a 200 the
+  SDK cannot use. After one, an `ALREADY_EXISTS` for an id you reused from an older order is reported
+  `recovered` with that order's real state: nothing is invented or placed twice.
+- On its first attempt, a bad request (400), a market that does not exist (404), an account that may
+  not trade (403) or a spent budget (429, waited out and resent) refuses the whole batch with nothing
+  placed. After a lost answer, though, an earlier attempt may have placed orders even if the last
+  answer is a refusal. A batch larger than the key's whole budget is a 400 with a number in
+  `details.limit`: send fewer at a time. The SDK never splits a batch.
+- **When `placeOrders` throws** after building its body, the error carries
+  `clientOrderIds`, every id of the body in request order, and `maybePlaced`, false only when every
+  attempt was a definite refusal. Read them with `batchPlaceErrorInfo(err)`; when `maybePlaced` is
+  true, look the orders up with `orderByClientId` before placing again. A 200 that does not match
+  the request (not JSON, no `data`, other results) throws `BatchResponseError` with `maybePlaced:
+  true`. An SDK error keeps its class; any other error (an abort reason, an error thrown by a
+  custom authenticator) is wrapped in a `CexyError` with the original as `cause` (your reason object
+  is never modified).
+  `placeOrder` attaches its own id and `maybePlaced` to **SDK errors only**: an abort or a custom
+  authenticator's error is thrown as is, without them. If you may abort a placement, pass your own
+  `client_order_id` (`newClientOrderId()`) and save it before the call.
+
 ### Market buys by total
 
 A market buy can name a budget, `quote_quantity`, instead of a `quantity`: "spend at most this
@@ -318,6 +377,13 @@ per-key limits are live). Cancel-all is limited separately to 30/min per account
 downwards to `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset` (seconds until the window
 resets), and pauses after a 429. Change it with `rateLimit: { requestsPerMinute }`, or turn it off with
 `rateLimit: false`. The limiter is per client instance: share one client.
+
+**Batches and order budgets.** A batch of N orders or cancel entries takes N tokens from the client's
+limiter, as the server counts it. A market maker's key also has an order budget of 50 placements a
+second (per key and per account); cancels never count against it. A 429 whose `details.limit` is
+`"order_actions"` holds only **placements** (`placeOrder`, `placeOrders`) for its wait: reads and
+cancels keep going. Set `new CexyClient({ orderActionsPerSecond: 50, ... })` to keep placements under
+that budget locally instead of being refused (off by default).
 
 ## WebSocket
 

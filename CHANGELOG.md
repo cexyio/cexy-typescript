@@ -6,6 +6,33 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `trading.placeOrders(symbol, orders)`: up to 20 orders in one market in one request
+  (`POST /trading/orders/batch`). Not atomic; results in request order, each `placed`, `failed`,
+  `recovered` or `unknown` (`BatchPlaceResult`, `BatchOrderOutcome`). A `client_order_id` is generated
+  for each order without one, before the first attempt; a retry resends the same body. After a lost
+  answer, an order the earlier attempt placed is reported `recovered` from the server's
+  `ALREADY_EXISTS` details (looked up once by client order id if they are missing), never placed again.
+- `trading.cancelOrders(orders)`: up to 50 cancels by `order_id` or `client_order_id`
+  (`POST /trading/orders/cancel-batch`, `BatchCancelResult`, `CancelEntryOutcome`).
+- `trading.cancelOrderByClientId(clientOrderId)` (`DELETE /trading/orders/by-client-id/{id}`).
+- `new CexyClient({ orderActionsPerSecond })`: an optional client-side budget for placements.
+- `ApiKey.rate_tier` (`default` or `mm`), and the generated `BatchOrder*` and `CancelBatch*` types.
+- Shared conformance cases: `trading/batch_orders.json`.
+- An error thrown by `placeOrders` or `placeOrder` carries `clientOrderIds` and `maybePlaced`
+  (`batchPlaceErrorInfo(err)`); `newClientOrderId()` makes ids to save before the call.
+- `BatchResponseError`: a batch 200 that is not JSON or does not match the request (count, index,
+  ids), counted as a lost answer.
+- A recovery lookup that fails in any way, or answers something that is not an order, leaves the
+  item `unknown`; the call still returns. A `details.status` of `unknown` is looked up.
+- An abort of `placeOrders` is thrown as a `CexyError` with the abort reason as `cause`; the reason
+  object itself is never modified.
+
+### Changed
+- A batch takes one limiter token per order or entry.
+- A 429 with `details.limit` `order_actions` holds only placements for its wait, not the whole client.
+- The client limiter waits before a request is signed, not after.
+
 ## [0.1.0-dev.16] (2026-10-09)
 
 ### Changed
