@@ -21,7 +21,12 @@ All notable changes to this project are documented here. The format follows
 - Shared conformance cases: `trading/batch_orders.json`.
 - An error thrown by `placeOrders` or `placeOrder` carries `clientOrderIds` and `maybePlaced`
   (`batchPlaceErrorInfo(err)`); `newClientOrderId()` makes ids to save before the call.
-- `BatchResponseError`: a batch 200 that does not match the request (counted as a lost answer).
+- `BatchResponseError`: a batch 200 that is not JSON or does not match the request (count, index,
+  ids), counted as a lost answer.
+- A recovery lookup that fails in any way, or answers something that is not an order, leaves the
+  item `unknown`; the call still returns. A `details.status` of `unknown` is looked up.
+- An abort of `placeOrders` is thrown as a `CexyError` with the abort reason as `cause`; the reason
+  object itself is never modified.
 
 ### Changed
 - A batch takes one limiter token per order or entry.

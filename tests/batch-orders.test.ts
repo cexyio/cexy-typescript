@@ -530,7 +530,7 @@ describe("errors carry the client order ids (rule 9)", () => {
     expect(newClientOrderId()).not.toBe(a);
   });
 
-  it("an abort during the batch call keeps its class and carries the generated ids, maybePlaced true", async () => {
+  it("an abort during the batch call is wrapped (the reason untouched) and carries the generated ids, maybePlaced true", async () => {
     const ctrl = new AbortController();
     const reason = new Error("caller gave up");
     const srv = server({}, {}, (s) => {
@@ -542,7 +542,10 @@ describe("errors carry the client order ids (rule 9)", () => {
         signal: ctrl.signal,
       }),
     );
-    expect(err).toBe(reason);
+    // The caller's own reason object is never written to: it is wrapped, as `cause`.
+    expect(err).toBeInstanceOf(CexyError);
+    expect((err as Error).cause).toBe(reason);
+    expect(Object.keys(reason)).toEqual([]);
     const info = batchPlaceErrorInfo(err)!;
     expect(info.maybePlaced).toBe(true);
     const sent = (JSON.parse(srv.sent[0]!.raw!) as { orders: Item[] }).orders.map((o) => o["client_order_id"]);
@@ -592,5 +595,53 @@ describe("errors carry the client order ids (rule 9)", () => {
     const srv = server({});
     await expect(srv.client.trading.cancelOrders([{ client_order_id: "." }])).rejects.toBeInstanceOf(CexyConfigError);
     expect(srv.sent).toEqual([]);
+  });
+});
+
+describe("round 3: any lookup failure is unknown (rule 12), unusable 200s", () => {
+  const internalItem = (cid: string) => ({
+    http_status: 200,
+    data: {
+      placed: 0,
+      failed: 1,
+      results: [{ index: 0, client_order_id: cid, order: null, fills: [], error: { code: "INTERNAL", message: "x", retryable: false } }],
+    },
+  });
+
+  it("an authenticator's own error on the lookup leaves the item unknown and the call returns", async () => {
+    let n = 0;
+    const authenticator = {
+      kind: "test",
+      authenticate: () => {
+        if (n++ > 0) throw new RangeError("token store unavailable");
+      },
+      redact: (t: string) => t,
+    };
+    const own = server({ attempts: [internalItem("c1")] }, { apiKey: undefined, apiSecret: undefined, authenticator }, defaultAnswer, (s) => s.method === "POST" && s.path === PLACE_PATH);
+    const res = await own.client.trading.placeOrders("BTC/USDT", [{ side: "buy", type: "market", quantity: "1", client_order_id: "c1" }]);
+    expect(res.results.map((r) => r.outcome)).toEqual(["unknown"]);
+    expect(res.unknown).toBe(1);
+  });
+
+  it("a lookup 200 that is not an order leaves the item unknown", async () => {
+    const srv = server(
+      { attempts: [internalItem("c1")], lookups: { "cid:c1": { http_status: 200, body: { data: { hello: "world" } } } } },
+      {},
+      defaultAnswer,
+      (s) => s.method === "POST" && s.path === PLACE_PATH,
+    );
+    const res = await srv.client.trading.placeOrders("BTC/USDT", [{ side: "buy", type: "market", quantity: "1", client_order_id: "c1" }]);
+    expect(srv.lookups).toEqual(["cid:c1"]);
+    expect(res.results.map((r) => r.outcome)).toEqual(["unknown"]);
+  });
+
+  it("a non-JSON 200 to the batch call throws BatchResponseError (with the ids for a place)", async () => {
+    const html = () => new Response("<html>maintenance</html>", { status: 200 });
+    const a = server({}, {}, html);
+    const e1 = await settle(a.client.trading.placeOrders("BTC/USDT", [{ side: "buy", type: "market", quantity: "1", client_order_id: "c1" }]));
+    expect(e1).toBeInstanceOf(BatchResponseError);
+    expect(batchPlaceErrorInfo(e1)).toEqual({ clientOrderIds: ["c1"], maybePlaced: true });
+    const b = server({}, {}, html);
+    await expect(b.client.trading.cancelOrders([{ order_id: "o1" }])).rejects.toBeInstanceOf(BatchResponseError);
   });
 });

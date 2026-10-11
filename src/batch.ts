@@ -58,13 +58,22 @@ export function batchPlaceErrorInfo(err: unknown): BatchPlaceErrorInfo | null {
 }
 
 /**
- * Returns `err` with `clientOrderIds` and `maybePlaced` set on it (its class kept). A value that
- * cannot carry them (a primitive, a frozen object) is wrapped in a `CexyError` with it as `cause`.
+ * Returns `err` with `clientOrderIds` and `maybePlaced` set on it, its class kept, when the SDK
+ * created it (a `CexyError`). Anything else (the caller's own abort reason, an authenticator's
+ * error) is never written to: with `wrapForeign` it is wrapped in a `CexyError` that carries the
+ * ids and has it as `cause`; without, it is returned unchanged.
  */
-export function withBatchPlaceInfo(err: unknown, clientOrderIds: readonly string[], maybePlaced: boolean): unknown {
+export function withBatchPlaceInfo(
+  err: unknown,
+  clientOrderIds: readonly string[],
+  maybePlaced: boolean,
+  wrapForeign = true,
+): unknown {
   let target: unknown = err;
-  if (!target || typeof target !== "object" || !Object.isExtensible(target)) {
-    target = new CexyError(`placeOrders failed: ${String(err)}`, { cause: err });
+  if (!(err instanceof CexyError) || !Object.isExtensible(err)) {
+    if (!wrapForeign) return err;
+    const what = err instanceof Error ? err.message : String(err);
+    target = new CexyError(`placeOrders failed: ${what}`, { cause: err });
   }
   const props = { clientOrderIds: [...clientOrderIds], maybePlaced };
   for (const [k, value] of Object.entries(props)) {
@@ -84,8 +93,24 @@ export function maybePlaced(err: unknown, attempts: readonly AttemptKind[]): boo
   return !(err instanceof CexyConfigError);
 }
 
-/** A 200 the SDK cannot use: no `data`, or results that do not match the request. */
+/** A 200 the SDK cannot use: not JSON, no `data`, or results that do not match the request. */
 export class BatchResponseError extends CexyError {}
+
+/**
+ * The transport throws a plain `CexyError` (no subclass) only for a 2xx whose body is not JSON:
+ * a batch call reports it as `BatchResponseError`, keeping the original as `cause`.
+ */
+export function asBatchResponseError(err: unknown): unknown {
+  if (err instanceof CexyError && Object.getPrototypeOf(err) === CexyError.prototype) {
+    return new BatchResponseError(err.message, { cause: err });
+  }
+  return err;
+}
+
+/** A lookup answer usable as an order: an object with a string `id` and `status`. */
+export function isOrderLike(v: unknown): v is Order {
+  return isObject(v) && typeof v["id"] === "string" && v["id"] !== "" && typeof v["status"] === "string" && v["status"] !== "";
+}
 
 const ORDER_AMOUNT_FIELDS = ["price", "quantity", "quote_quantity", "stop_price"] as const;
 const ITEM_FIELDS = [
@@ -262,6 +287,12 @@ function detail(err: ErrorBody, name: string): string | null {
   return typeof v === "string" && v !== "" ? v : null;
 }
 
+/** `details.status`, where "unknown" counts as missing so the order is looked up (rule 11). */
+function detailStatus(err: ErrorBody): string | null {
+  const v = detail(err, "status");
+  return v === "unknown" ? null : v;
+}
+
 function statusOf(v: unknown): string | null {
   return typeof v === "string" && v !== "" ? v : null;
 }
@@ -284,7 +315,10 @@ export function checkPlaceResponse(data: unknown, items: readonly BatchOrderItem
   return data as BatchOrderResponse;
 }
 
-/** As `checkPlaceResponse`, for a batch cancel: one result per entry, each with its index. */
+/**
+ * As `checkPlaceResponse`, for a batch cancel: one result per entry, each with its index and the
+ * `order_id` / `client_order_id` sent.
+ */
 export function checkCancelResponse(data: unknown, entries: readonly CancelBatchItem[]): CancelBatchResponse {
   const results: unknown = isObject(data) ? data["results"] : undefined;
   if (!Array.isArray(results)) throw new BatchResponseError("cancelOrders(): the answer has no results");
@@ -292,7 +326,13 @@ export function checkCancelResponse(data: unknown, entries: readonly CancelBatch
     throw new BatchResponseError(`cancelOrders(): ${results.length} results for ${entries.length} entries`);
   }
   results.forEach((r: unknown, i) => {
-    if (!isObject(r) || r["index"] !== i) {
+    const e = entries[i];
+    if (
+      !isObject(r) ||
+      r["index"] !== i ||
+      (r["order_id"] ?? null) !== (e?.order_id ?? null) ||
+      (r["client_order_id"] ?? null) !== (e?.client_order_id ?? null)
+    ) {
       throw new BatchResponseError(`cancelOrders(): result ${i} does not match the entry sent at that position`);
     }
   });
@@ -322,7 +362,7 @@ export function placeFromResult(r: BatchOrderResult, afterAmbiguous: boolean): B
       ...base,
       outcome: "recovered",
       order_id: detail(err, "order_id"),
-      status: detail(err, "status"),
+      status: detailStatus(err),
       order: null,
       fills: [],
       error: err,

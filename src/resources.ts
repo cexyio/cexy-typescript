@@ -21,6 +21,8 @@ import {
   checkPlaceResponse,
   maybePlaced,
   withBatchPlaceInfo,
+  asBatchResponseError,
+  isOrderLike,
   cancelFromResult,
   cancelRecovered,
   cancelResult,
@@ -52,6 +54,7 @@ import type {
   Asset,
   Balance,
   BatchOrderResponse,
+  CancelBatchResponse,
   CancelAllAfterResult,
   CancelAllResult,
   CancelAllUntilDoneResult,
@@ -440,7 +443,7 @@ export class TradingResource extends Resource {
       return await this.#placeOrderLoop(body, clientOrderId, maxRetries, info, attempts, opts);
     } catch (err) {
       // The caller gets the id and whether the order may exist, whatever the failure.
-      throw withBatchPlaceInfo(err, [clientOrderId], maybePlaced(err, attempts));
+      throw withBatchPlaceInfo(err, [clientOrderId], maybePlaced(err, attempts), false);
     }
   }
 
@@ -577,7 +580,8 @@ export class TradingResource extends Resource {
         attempts,
       );
       data = checkPlaceResponse((raw.data as { data?: unknown } | null)?.data, items);
-    } catch (err) {
+    } catch (caught) {
+      const err = asBatchResponseError(caught);
       // The request may have been sent: the caller gets every id of the body to reconcile with.
       throw withBatchPlaceInfo(
         err,
@@ -609,8 +613,13 @@ export class TradingResource extends Resource {
   async cancelOrders(orders: readonly CancelOrderEntry[], opts: RequestOptions = {}): Promise<BatchCancelResult> {
     const entries = buildCancelEntries(orders);
     const attempts: AttemptKind[] = [];
-    const raw = await this.t.request({ op: "cancel_batch", body: { orders: entries }, cost: entries.length }, opts, attempts);
-    const data = checkCancelResponse((raw.data as { data?: unknown } | null)?.data, entries);
+    let data: CancelBatchResponse;
+    try {
+      const raw = await this.t.request({ op: "cancel_batch", body: { orders: entries }, cost: entries.length }, opts, attempts);
+      data = checkCancelResponse((raw.data as { data?: unknown } | null)?.data, entries);
+    } catch (err) {
+      throw asBatchResponseError(err);
+    }
     const afterAmbiguous = attempts.includes("ambiguous");
     const results: CancelEntryOutcome[] = [];
     for (const r of data.results) {
@@ -627,7 +636,7 @@ export class TradingResource extends Resource {
   }
 
   /**
-   * One unretried order read for a batch recovery; null when it fails (404 included). Once the
+   * One unretried order read for a batch recovery; null when it fails in any way (404 included). Once the
    * batch has answered, orders may already be placed or cancelled, so an aborted signal never
    * throws away the results: no further lookup is sent and the item is reported `unknown`.
    */
@@ -638,11 +647,12 @@ export class TradingResource extends Resource {
   ): Promise<Order | null> {
     if (opts.signal?.aborted) return null;
     try {
-      return await this.data<Order>({ op, pathParams }, { signal: opts.signal, timeoutMs: opts.timeoutMs, maxRetries: 0 });
-    } catch (err) {
-      if (opts.signal?.aborted) return null;
-      if (err instanceof CexyApiError || err instanceof CexyConnectionError || err instanceof CexyConfigError) return null;
-      throw err;
+      const order = await this.data<unknown>({ op, pathParams }, { signal: opts.signal, timeoutMs: opts.timeoutMs, maxRetries: 0 });
+      return isOrderLike(order) ? order : null;
+    } catch {
+      // Any failure (API, network, a 200 that is not JSON, an authenticator's own error): the
+      // batch already ran, so the item is reported unknown and the call still returns.
+      return null;
     }
   }
 

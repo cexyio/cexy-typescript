@@ -188,7 +188,9 @@ await cexy.trading.cancelOrderByClientId("my-id-1");
   `clientOrderIds`, every id of the body in request order, and `maybePlaced`, false only when every
   attempt was a definite refusal. Read them with `batchPlaceErrorInfo(err)`; when `maybePlaced` is
   true, look the orders up with `orderByClientId` before placing again. A 200 that does not match
-  the request (no `data`, other results) throws `BatchResponseError` with `maybePlaced: true`.
+  the request (not JSON, no `data`, other results) throws `BatchResponseError` with `maybePlaced:
+  true`. An abort is thrown as a `CexyError` with your abort reason as `cause` (your reason object
+  is never modified).
   `placeOrder` attaches its own id and `maybePlaced` the same way.
 
 ### Market buys by total
