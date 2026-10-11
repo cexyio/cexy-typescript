@@ -181,6 +181,9 @@ function checkCommon(c: Case, srv: ReturnType<typeof server>, res: unknown): voi
   if ("lookups" in e) expect(srv.lookups).toEqual(e["lookups"]);
   if (e["error"] === "connection") {
     expect(res).toBeInstanceOf(CexyConnectionError);
+  } else if (e["error"] === "bad_response") {
+    // Rule 13: a cancel-batch answer that does not match the entries sent.
+    expect(res).toBeInstanceOf(BatchResponseError);
   } else if (e["error"] === "batch") {
     // Rule 9: the error keeps its class and carries every cid sent, in order, and maybe_placed.
     const cause =
