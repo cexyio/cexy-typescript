@@ -167,7 +167,9 @@ await cexy.trading.cancelOrderByClientId("my-id-1");
   are your only way to find the orders it may have placed.
 - **Retries:** the request body is built once; a retry after a timeout resends it unchanged, and the
   server refuses every id it already placed, so nothing is placed twice. Such an order comes back as
-  `recovered` with its `order_id` and `status`. A `rejected` status means the server refused it for
+  `recovered` with its `order_id` and `status`. A recovered order counts as placed unless its status
+  is `rejected`, even if it ended `cancelled` with nothing filled: read `status` before acting. A
+  `rejected` status means the server refused it for
   funds and its id is spent: do not place it again under that id. `unknown` means its state could
   not be read; it was not placed again (look it up with `orderByClientId`). A cancel that a retry
   finds already closed is looked up and comes back as `recovered` with its current status.
@@ -184,14 +186,17 @@ await cexy.trading.cancelOrderByClientId("my-id-1");
   placed. After a lost answer, though, an earlier attempt may have placed orders even if the last
   answer is a refusal. A batch larger than the key's whole budget is a 400 with a number in
   `details.limit`: send fewer at a time. The SDK never splits a batch.
-- **When `placeOrders` throws** after building its body, the error (its class unchanged) carries
+- **When `placeOrders` throws** after building its body, the error carries
   `clientOrderIds`, every id of the body in request order, and `maybePlaced`, false only when every
   attempt was a definite refusal. Read them with `batchPlaceErrorInfo(err)`; when `maybePlaced` is
   true, look the orders up with `orderByClientId` before placing again. A 200 that does not match
   the request (not JSON, no `data`, other results) throws `BatchResponseError` with `maybePlaced:
-  true`. An abort is thrown as a `CexyError` with your abort reason as `cause` (your reason object
+  true`. An SDK error keeps its class; any other error (an abort reason, an error thrown by a
+  custom authenticator) is wrapped in a `CexyError` with the original as `cause` (your reason object
   is never modified).
-  `placeOrder` attaches its own id and `maybePlaced` the same way.
+  `placeOrder` attaches its own id and `maybePlaced` to **SDK errors only**: an abort or a custom
+  authenticator's error is thrown as is, without them. If you may abort a placement, pass your own
+  `client_order_id` (`newClientOrderId()`) and save it before the call.
 
 ### Market buys by total
 

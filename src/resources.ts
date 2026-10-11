@@ -442,7 +442,8 @@ export class TradingResource extends Resource {
     try {
       return await this.#placeOrderLoop(body, clientOrderId, maxRetries, info, attempts, opts);
     } catch (err) {
-      // The caller gets the id and whether the order may exist, whatever the failure.
+      // SDK errors get the id and whether the order may exist; an abort reason or a foreign
+      // error is rethrown untouched (wrapForeign false), so a caller who may abort passes its own id.
       throw withBatchPlaceInfo(err, [clientOrderId], maybePlaced(err, attempts), false);
     }
   }
