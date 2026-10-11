@@ -9,6 +9,11 @@ const MAX_BLOCK_MS = 120_000;
 
 export interface RateLimiterOptions {
   requestsPerMinute: number;
+  /**
+   * Bucket size: how many tokens can be spent at once after an idle spell. Default
+   * `requestsPerMinute`. The order-actions budget uses its per-second rate here.
+   */
+  burst?: number;
   /** @internal for tests */
   now?: () => number;
   /** @internal for tests */
@@ -23,6 +28,7 @@ export interface RateLimiterState {
 
 export class RateLimiter {
   #rpm: number;
+  #burst: number;
   #tokens: number;
   #last: number;
   #blockedUntil = 0;
@@ -31,8 +37,10 @@ export class RateLimiter {
 
   constructor(opts: RateLimiterOptions) {
     if (!(opts.requestsPerMinute > 0)) throw new RangeError("requestsPerMinute must be > 0");
+    if (opts.burst !== undefined && !(opts.burst > 0)) throw new RangeError("burst must be > 0");
     this.#rpm = opts.requestsPerMinute;
-    this.#tokens = opts.requestsPerMinute;
+    this.#burst = opts.burst ?? opts.requestsPerMinute;
+    this.#tokens = this.#capacity();
     this.#now = opts.now ?? Date.now;
     this.#sleep = opts.sleep ?? sleep;
     this.#last = this.#now();
@@ -43,8 +51,11 @@ export class RateLimiter {
     return { requestsPerMinute: this.#rpm, tokens: this.#tokens, blockedUntil: this.#blockedUntil };
   }
 
-  /** Waits until a request may be sent, then takes a token. */
-  async acquire(signal?: AbortSignal): Promise<void> {
+  /**
+   * Waits until a request may be sent, then takes `cost` tokens (a batch of N takes N). A cost
+   * above the bucket size waits for a full bucket and leaves the rest as debt for later calls.
+   */
+  async acquire(signal?: AbortSignal, cost = 1): Promise<void> {
     for (;;) {
       this.#refill();
       const now = this.#now();
@@ -52,12 +63,13 @@ export class RateLimiter {
         await this.#sleep(this.#blockedUntil - now, signal);
         continue;
       }
-      if (this.#tokens >= 1) {
-        this.#tokens -= 1;
+      const need = Math.min(cost, this.#capacity());
+      if (this.#tokens >= need) {
+        this.#tokens -= cost;
         return;
       }
       const msPerToken = 60_000 / this.#rpm;
-      await this.#sleep(Math.min(MAX_BLOCK_MS, Math.ceil((1 - this.#tokens) * msPerToken)), signal);
+      await this.#sleep(Math.min(MAX_BLOCK_MS, Math.ceil((need - this.#tokens) * msPerToken)), signal);
     }
   }
 
@@ -80,7 +92,7 @@ export class RateLimiter {
     // Below one request a minute a server limit is not credible; ignore it.
     if (limit !== null && limit >= 1 && limit < this.#rpm) {
       this.#rpm = limit;
-      this.#tokens = Math.min(this.#tokens, limit);
+      this.#tokens = Math.min(this.#tokens, this.#capacity());
     }
     const remaining = num(headers.get("x-ratelimit-remaining"));
     if (remaining !== null && remaining >= 0 && remaining < this.#tokens) this.#tokens = remaining;
@@ -100,11 +112,16 @@ export class RateLimiter {
     this.#blockedUntil = Math.max(this.#blockedUntil, this.#now() + Math.min(ms, MAX_BLOCK_MS));
   }
 
+  /** The bucket size: `burst` when set (never above the current rate), else the rate. */
+  #capacity(): number {
+    return Math.min(this.#burst, this.#rpm);
+  }
+
   #refill(): void {
     const now = this.#now();
     const elapsed = now - this.#last;
     if (elapsed > 0) {
-      this.#tokens = Math.min(this.#rpm, this.#tokens + (elapsed * this.#rpm) / 60_000);
+      this.#tokens = Math.min(this.#capacity(), this.#tokens + (elapsed * this.#rpm) / 60_000);
       this.#last = now;
     }
   }

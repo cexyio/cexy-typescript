@@ -54,6 +54,8 @@ export interface TransportConfig {
   fetch: FetchLike;
   authenticator: Authenticator | null;
   limiter: RateLimiter | null;
+  /** Optional budget for placements in order actions (`orderActionsPerSecond`); null when off. */
+  orderLimiter?: RateLimiter | null;
   userAgent: string | null;
   sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   random: () => number;
@@ -69,7 +71,20 @@ export interface CallSpec {
   body?: unknown;
   responseType?: "json" | "text";
   idempotencyKey?: string | undefined;
+  /** Tokens this call takes from the client limiter per attempt (a batch of N takes N). Default 1. */
+  cost?: number;
+  /**
+   * Placements in this call (0 for anything else): they wait out an order-actions hold and take
+   * this many tokens from the optional order-actions budget, per attempt.
+   */
+  orderActions?: number;
 }
+
+/**
+ * How a failed attempt ended: `ambiguous` when the server may have acted (a network error after
+ * sending, or HTTP 500/502/504), `refused` when it did not (any 4xx, 429 and 503 included).
+ */
+export type AttemptKind = "ambiguous" | "refused";
 
 export interface RawResponse {
   status: number;
@@ -82,16 +97,43 @@ const IDEMPOTENT_OPS: ReadonlySet<OperationId> = new Set<OperationId>(["join_poo
 
 /**
  * Mutations `request()` may retry: pool join/exit (the server honours their `Idempotency-Key`)
- * cancel-all and cancel-all-after (naturally repeatable). Any other mutation sent through `request()` is never
- * retried; `placeOrder` and `cancelOrder` have their own policies on top of `attempt()`.
+ * cancel-all and cancel-all-after (naturally repeatable), the batch place (every order carries a
+ * `client_order_id`, so the server refuses a repeat; the body is built once and resent unchanged),
+ * the batch cancel and the cancel by client order id (cancelling twice changes nothing more). Any
+ * other mutation sent through `request()` is never retried; `placeOrder`, `cancelOrder` and
+ * `cancelOrderByClientId` have their own policies on top of `attempt()`.
  */
-const REPEAT_SAFE_MUTATIONS: ReadonlySet<OperationId> = new Set<OperationId>(["join_pool", "exit_pool", "cancel_all", "cancel_all_after"]);
+const REPEAT_SAFE_MUTATIONS: ReadonlySet<OperationId> = new Set<OperationId>([
+  "join_pool",
+  "exit_pool",
+  "cancel_all",
+  "cancel_all_after",
+  "place_batch",
+  "cancel_batch",
+  "cancel_order_by_client_id",
+]);
+
+/** HTTP statuses after which the server may or may not have acted. */
+const AMBIGUOUS_STATUS: ReadonlySet<number> = new Set([500, 502, 504]);
+
+/**
+ * `details.limit` on a 429 that refused order actions (a market maker's per-second budget). It
+ * holds only placements (`placeOrder`, `placeOrders`), never reads or cancels.
+ */
+export const ORDER_ACTIONS_LIMIT = "order_actions";
+
+/** Longest placement hold any server hint can impose (mirrors `MAX_SERVER_WAIT_MS`). */
+const MAX_PLACEMENT_HOLD_MS = MAX_SERVER_WAIT_MS;
+/** Random extra wait after a placement hold, so held callers do not all resend at once. */
+const HOLD_JITTER_MS = 250;
 
 const BACKOFF_BASE_MS = 500;
 const BACKOFF_MAX_MS = 10_000;
 
 export class Transport {
   readonly config: TransportConfig;
+  /** Placements wait until then (ms clock): set by a 429 whose `details.limit` is `order_actions`. */
+  #placementsHeldUntil = 0;
 
   constructor(config: TransportConfig) {
     this.config = config;
@@ -103,8 +145,11 @@ export class Transport {
    * honours it there, which makes their retries safe); the other mutations routed here
    * (cancel-all) are naturally repeatable and send no key. Any other mutation is sent once.
    * `placeOrder` and `cancelOrder` use `attempt()` with their own policies.
+   *
+   * `attempts`: if given, one entry is pushed per failed attempt (see `AttemptKind`). The batch
+   * calls read it to tell a lost answer from a definite refusal.
    */
-  async request(spec: CallSpec, opts: RequestOptions = {}): Promise<RawResponse> {
+  async request(spec: CallSpec, opts: RequestOptions = {}, attempts?: AttemptKind[]): Promise<RawResponse> {
     const info = OPERATIONS[spec.op];
     const idempotencyKey = IDEMPOTENT_OPS.has(spec.op) ? (spec.idempotencyKey ?? opts.idempotencyKey ?? newId()) : undefined;
     const repeatSafe = info.method === "GET" || REPEAT_SAFE_MUTATIONS.has(spec.op);
@@ -113,6 +158,7 @@ export class Transport {
       try {
         return await this.attempt({ ...spec, idempotencyKey }, opts);
       } catch (err) {
+        attempts?.push(attemptKind(err));
         if (attempt >= maxRetries || !isRetryable(err) || opts.signal?.aborted) throw err;
         await this.backoff(spec.op, info, attempt, err, idempotencyKey, opts.signal);
       }
@@ -212,6 +258,9 @@ export class Transport {
     }
     if (IDEMPOTENT_OPS.has(spec.op) && spec.idempotencyKey) headers.set("Idempotency-Key", spec.idempotencyKey);
 
+    // Before signing, so a long hold never leaves a stale timestamp on the request.
+    if (spec.orderActions && spec.orderActions > 0) await this.#placementGate(spec.orderActions, opts.signal);
+
     if (info.auth === "api_key") {
       const auth = this.config.authenticator;
       if (!auth) {
@@ -222,7 +271,7 @@ export class Transport {
       await auth.authenticate({ method: info.method, url, headers, body });
     }
 
-    if (this.config.limiter) await this.config.limiter.acquire(opts.signal);
+    if (this.config.limiter) await this.config.limiter.acquire(opts.signal, spec.cost ?? 1);
 
     const timeoutMs = opts.timeoutMs ?? this.config.timeoutMs;
     const ctrl = new AbortController();
@@ -275,7 +324,10 @@ export class Transport {
     if (!res.ok) {
       const parsed = safeJson(text);
       const error = errorFromResponse(res.status, parsed, res.headers, (t) => this.redact(t));
-      if (error instanceof RateLimitError && error.retryAfterMs) this.config.limiter?.blockFor(error.retryAfterMs);
+      if (error instanceof RateLimitError && error.retryAfterMs) {
+        if (error.details["limit"] === ORDER_ACTIONS_LIMIT) this.#holdPlacements(error.retryAfterMs);
+        else this.config.limiter?.blockFor(error.retryAfterMs);
+      }
       throw error;
     }
 
@@ -286,6 +338,22 @@ export class Transport {
       throw new CexyError(`${info.method} ${info.path}: expected JSON, got ${res.headers.get("content-type") ?? "unknown content"}`);
     }
     return { status: res.status, headers: res.headers, data };
+  }
+
+  /** Holds placements (only) for `ms`, capped at 120 s. A shorter hint never shortens a hold. */
+  #holdPlacements(ms: number): void {
+    if (!(ms > 0) || !Number.isFinite(ms)) return;
+    const now = (this.config.now ?? Date.now)();
+    this.#placementsHeldUntil = Math.max(this.#placementsHeldUntil, now + Math.min(ms, MAX_PLACEMENT_HOLD_MS));
+  }
+
+  /** Waits out an order-actions hold (plus jitter), then takes `actions` from the optional budget. */
+  async #placementGate(actions: number, signal?: AbortSignal): Promise<void> {
+    const held = this.#placementsHeldUntil - (this.config.now ?? Date.now)();
+    if (held > 0) {
+      await this.config.sleep(Math.min(MAX_PLACEMENT_HOLD_MS, Math.ceil(held + this.config.random() * HOLD_JITTER_MS)), signal);
+    }
+    await this.config.orderLimiter?.acquire(signal, actions);
   }
 
   buildUrl(info: OperationInfo, pathParams: Record<string, string> = {}, query?: Record<string, unknown>): URL {
@@ -337,6 +405,13 @@ export function isRetryable(err: unknown): boolean {
     return err.retryable || concurrent;
   }
   return false;
+}
+
+/** How a failed attempt ended, for the batch calls: see `AttemptKind`. */
+export function attemptKind(err: unknown): AttemptKind {
+  if (err instanceof CexyConnectionError) return "ambiguous";
+  if (err instanceof CexyApiError && AMBIGUOUS_STATUS.has(err.status)) return "ambiguous";
+  return "refused";
 }
 
 /** True if a failure leaves it unknown whether a mutation took effect. */

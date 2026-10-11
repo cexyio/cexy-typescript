@@ -139,6 +139,40 @@ first (millisecond precision), with no sender identity. An entry disappears once
 released (the amount moves to `available`) or cancelled by the exchange. It is always an array
 (`[]` when none, including from servers that predate the field).
 
+### Batch orders
+
+Place up to 20 orders in one market with one request, or cancel up to 50:
+
+```ts
+const res = await cexy.trading.placeOrders("BTC/USDT", [
+  { side: "buy", type: "limit", price: "64000", quantity: "0.01" },
+  { side: "sell", type: "limit", price: "66000", quantity: "0.01" },
+]);
+for (const o of res.results) {          // request order
+  console.log(o.index, o.client_order_id, o.outcome, o.order_id, o.status, o.error);
+}
+
+await cexy.trading.cancelOrders([{ order_id: "..." }, { client_order_id: "..." }]);
+await cexy.trading.cancelOrderByClientId("my-id-1");
+```
+
+- Each order is placed (or cancelled) on its own: the batch is **not atomic**, and one refusal does
+  not stop the rest. Each result's `outcome` is `placed` (or `cancelled`), `failed` with `error`,
+  `recovered` or `unknown` (below). The counts on the result are computed from the results.
+- Every order carries a `client_order_id`; one (a UUID) is generated for each order without one.
+  Your own ids must be 1 to 64 characters of `A-Z a-z 0-9 _ - . :`, distinct within the batch, and
+  unique per account across all markets.
+- **Retries:** the request body is built once; a retry after a timeout resends it unchanged, and the
+  server refuses every id it already placed, so nothing is placed twice. Such an order comes back as
+  `recovered` with its `order_id` and `status`. A `rejected` status means the server refused it for
+  funds and its id is spent: do not place it again under that id. `unknown` means its state could
+  not be read; it was not placed again (look it up with `orderByClientId`). A cancel that a retry
+  finds already closed is looked up and comes back as `recovered` with its current status.
+- A whole batch is refused, with nothing placed, for a bad request (400), a market that does not
+  exist (404), an account that may not trade (403) or a spent budget (429, waited out and resent).
+  A batch larger than the key's whole budget is a 400 with a number in `details.limit`: send
+  fewer at a time. The SDK never splits a batch.
+
 ### Market buys by total
 
 A market buy can name a budget, `quote_quantity`, instead of a `quantity`: "spend at most this
@@ -318,6 +352,13 @@ per-key limits are live). Cancel-all is limited separately to 30/min per account
 downwards to `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset` (seconds until the window
 resets), and pauses after a 429. Change it with `rateLimit: { requestsPerMinute }`, or turn it off with
 `rateLimit: false`. The limiter is per client instance: share one client.
+
+**Batches and order budgets.** A batch of N orders or cancel entries takes N tokens from the client's
+limiter, as the server counts it. A market maker's key also has an order budget of 50 placements a
+second (per key and per account); cancels never count against it. A 429 whose `details.limit` is
+`"order_actions"` holds only **placements** (`placeOrder`, `placeOrders`) for its wait: reads and
+cancels keep going. Set `new CexyClient({ orderActionsPerSecond: 50, ... })` to keep placements under
+that budget locally instead of being refused (off by default).
 
 ## WebSocket
 

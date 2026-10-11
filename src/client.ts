@@ -69,6 +69,12 @@ export interface CexyClientOptions {
    */
   rateLimit?: { requestsPerMinute: number } | false;
   /**
+   * A client-side budget for placements, in order actions per second (a batch of N counts N).
+   * Off by default. A market maker's key has 50 a second on the server: set `50` to wait locally
+   * instead of being refused. Cancels never count against it.
+   */
+  orderActionsPerSecond?: number;
+  /**
    * Appended to the User-Agent, e.g. `"my-bot/1.2"` gives `cexy-typescript/0.1.0 my-bot/1.2`.
    * Browsers do not let scripts set User-Agent; there it is not sent.
    */
@@ -160,6 +166,15 @@ export class CexyClient {
             ...(options.now ? { now: options.now } : {}),
           });
 
+    const ops = options.orderActionsPerSecond;
+    if (ops !== undefined && !(typeof ops === "number" && Number.isFinite(ops) && ops > 0)) {
+      throw new CexyConfigError("orderActionsPerSecond must be a positive number");
+    }
+    const orderLimiter =
+      ops === undefined
+        ? null
+        : new RateLimiter({ requestsPerMinute: ops * 60, burst: ops, sleep, ...(options.now ? { now: options.now } : {}) });
+
     this.#baseUrl = baseUrl;
     this.#transport = new Transport({
       baseUrl,
@@ -168,6 +183,7 @@ export class CexyClient {
       fetch: options.fetch ? fetchImpl : (input, init) => fetchImpl(input, init),
       authenticator,
       limiter,
+      orderLimiter,
       userAgent: canSetUserAgent() ? [USER_AGENT, options.userAgentSuffix].filter(Boolean).join(" ") : null,
       sleep,
       random: options.random ?? Math.random,

@@ -77,7 +77,10 @@ export const OPERATIONS = {
   order_history: op("GET", "/api/v1/trading/orders/history", "api_key", "read", "trading.orderHistory"),
   trade_history: op("GET", "/api/v1/trading/trades", "api_key", "read", "trading.trades"),
   place_order: op("POST", "/api/v1/trading/orders", "api_key", "trade", "trading.placeOrder"),
+  place_batch: op("POST", "/api/v1/trading/orders/batch", "api_key", "trade", "trading.placeOrders"),
   cancel_order: op("DELETE", "/api/v1/trading/orders/{order_id}", "api_key", "trade", "trading.cancelOrder"),
+  cancel_order_by_client_id: op("DELETE", "/api/v1/trading/orders/by-client-id/{client_order_id}", "api_key", "trade", "trading.cancelOrderByClientId"),
+  cancel_batch: op("POST", "/api/v1/trading/orders/cancel-batch", "api_key", "trade", "trading.cancelOrders"),
   cancel_all: op("POST", "/api/v1/trading/orders/cancel-all", "api_key", "trade", "trading.cancelAll"),
   cancel_all_after: op("POST", "/api/v1/trading/orders/cancel-all-after", "api_key", "trade", "trading.cancelAllAfter"),
   // Liquidity pools (trade)

@@ -14,16 +14,43 @@ import {
   PagingStalledError,
   RateLimitError,
 } from "./errors.js";
-import { isAmbiguous, isRetryable, newId, type CallSpec, type RequestOptions, type Transport } from "./http.js";
+import {
+  buildCancelEntries,
+  buildPlaceItems,
+  cancelFromResult,
+  cancelRecovered,
+  cancelResult,
+  needsLookup,
+  placeFromResult,
+  placeRecovered,
+  placeResult,
+  type BatchCancelResult,
+  type BatchOrderInput,
+  type BatchOrderOutcome,
+  type BatchPlaceResult,
+  type CancelEntryOutcome,
+  type CancelOrderEntry,
+} from "./batch.js";
+import {
+  isAmbiguous,
+  isRetryable,
+  newId,
+  type AttemptKind,
+  type CallSpec,
+  type RequestOptions,
+  type Transport,
+} from "./http.js";
 import { OPERATIONS } from "./operations.js";
 import { paginate, type IterateOptions } from "./pagination.js";
 import type {
   ApiKey,
   Asset,
   Balance,
+  BatchOrderResponse,
   CancelAllAfterResult,
   CancelAllResult,
   CancelAllUntilDoneResult,
+  CancelBatchResponse,
   CancelFailure,
   Candle,
   CursorParams,
@@ -407,7 +434,7 @@ export class TradingResource extends Resource {
 
     for (let attempt = 0; ; attempt++) {
       try {
-        const raw = await this.t.attempt({ op: "place_order", body }, opts);
+        const raw = await this.t.attempt({ op: "place_order", body, orderActions: 1 }, opts);
         const data = (raw.data as { data: PlaceOrderResponse }).data;
         return { ...data, client_order_id: clientOrderId, recovered: false };
       } catch (err) {
@@ -464,6 +491,127 @@ export class TradingResource extends Resource {
         }
         throw err;
       }
+    }
+  }
+
+  /**
+   * Cancels one order named by your `client_order_id` (needs the `trade` scope) and returns it.
+   * The id is percent-encoded in the path. Retried like `cancelOrder`: if a RETRY gets
+   * `INVALID_STATE` (the first attempt may have cancelled it), the order is fetched by
+   * `client_order_id` and returned instead: check its `status`. `INVALID_STATE` on the first
+   * attempt is thrown (e.g. already filled).
+   */
+  async cancelOrderByClientId(clientOrderId: string, opts: RequestOptions = {}): Promise<Order> {
+    const maxRetries = opts.maxRetries ?? this.t.config.maxRetries;
+    const info = OPERATIONS.cancel_order_by_client_id;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const raw = await this.t.attempt(
+          { op: "cancel_order_by_client_id", pathParams: { client_order_id: clientOrderId } },
+          opts,
+        );
+        return (raw.data as { data: Order }).data;
+      } catch (err) {
+        if (opts.signal?.aborted) throw err;
+        if (attempt > 0 && err instanceof CexyApiError && err.code === "INVALID_STATE") {
+          return this.orderByClientId(clientOrderId, { signal: opts.signal, timeoutMs: opts.timeoutMs });
+        }
+        if (isRetryable(err) && attempt < maxRetries) {
+          await this.t.backoff("cancel_order_by_client_id", info, attempt, err, undefined, opts.signal);
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+
+  /**
+   * Places 1 to 20 REAL orders in one market (needs the `trade` scope), each on its own: the
+   * batch is NOT atomic, and one refusal does not stop the rest.
+   *
+   * Each order is a `placeOrder` request without `symbol`; amounts are decimal strings. A
+   * `client_order_id` (a UUID) is generated for each order without one; your own ids must be 1
+   * to 64 characters of `A-Z a-z 0-9 _ - . :` and distinct within the batch (checked before
+   * sending: `CexyConfigError`).
+   *
+   * Retry safety: the body, ids included, is built once and every retry resends it unchanged.
+   * The server refuses a repeated id, so nothing is placed twice. After a lost answer (network
+   * error, timeout, 500/502/504), an order that the earlier attempt placed comes back as
+   * `outcome: "recovered"` with its `order_id` and `status` (`rejected` means refused for funds;
+   * its id is spent), or as `"unknown"` when its state could not be read; it is never placed
+   * again. A refusal of the whole batch (400, 403, 404) is thrown and never retried; a batch
+   * larger than the key's whole budget (400 with a number in `details.limit`) must be split by
+   * the caller. A 429 is waited out and the same body resent. Results are in request order;
+   * the counts are computed from them.
+   */
+  async placeOrders(symbol: string, orders: readonly BatchOrderInput[], opts: RequestOptions = {}): Promise<BatchPlaceResult> {
+    if (typeof symbol !== "string" || symbol === "") throw new CexyConfigError("placeOrders(): symbol is required");
+    const items = buildPlaceItems(orders, newId);
+    const attempts: AttemptKind[] = [];
+    const raw = await this.t.request(
+      { op: "place_batch", body: { symbol, orders: items }, cost: items.length, orderActions: items.length },
+      opts,
+      attempts,
+    );
+    const data = (raw.data as { data: BatchOrderResponse }).data;
+    const afterAmbiguous = attempts.includes("ambiguous");
+    const results: BatchOrderOutcome[] = [];
+    for (const r of data?.results ?? []) {
+      let outcome = placeFromResult(r, afterAmbiguous);
+      // The server could not say what took this id: read it once, and never place it again.
+      if (needsLookup(outcome)) {
+        outcome = placeRecovered(outcome, await this.#lookupOnce("get_order_by_client_id", { client_order_id: outcome.client_order_id }, opts));
+      }
+      results.push(outcome);
+    }
+    return placeResult(results);
+  }
+
+  /**
+   * Cancels 1 to 50 orders (needs the `trade` scope), each `{ order_id }` or
+   * `{ client_order_id }`. Each entry is cancelled on its own, in order; a failure does not stop
+   * the rest. Retried like `cancelOrder`: after a lost answer, an entry refused with
+   * `INVALID_STATE` (an earlier attempt may have cancelled it) is looked up once and comes back as
+   * `outcome: "recovered"` with its current `status` (or `"unknown"` if the lookup failed).
+   * Results are in request order; the counts are computed from them.
+   */
+  async cancelOrders(orders: readonly CancelOrderEntry[], opts: RequestOptions = {}): Promise<BatchCancelResult> {
+    const entries = buildCancelEntries(orders);
+    const attempts: AttemptKind[] = [];
+    const raw = await this.t.request({ op: "cancel_batch", body: { orders: entries }, cost: entries.length }, opts, attempts);
+    const data = (raw.data as { data: CancelBatchResponse }).data;
+    const afterAmbiguous = attempts.includes("ambiguous");
+    const results: CancelEntryOutcome[] = [];
+    for (const r of data?.results ?? []) {
+      let outcome = cancelFromResult(r, afterAmbiguous);
+      if (outcome.outcome === "recovered") {
+        const order = outcome.order_id
+          ? await this.#lookupOnce("get_order", { order_id: outcome.order_id }, opts)
+          : await this.#lookupOnce("get_order_by_client_id", { client_order_id: outcome.client_order_id ?? "" }, opts);
+        outcome = cancelRecovered(outcome, order);
+      }
+      results.push(outcome);
+    }
+    return cancelResult(results);
+  }
+
+  /**
+   * One unretried order read for a batch recovery; null when it fails (404 included). Once the
+   * batch has answered, orders may already be placed or cancelled, so an aborted signal never
+   * throws away the results: no further lookup is sent and the item is reported `unknown`.
+   */
+  async #lookupOnce(
+    op: "get_order" | "get_order_by_client_id",
+    pathParams: Record<string, string>,
+    opts: RequestOptions,
+  ): Promise<Order | null> {
+    if (opts.signal?.aborted) return null;
+    try {
+      return await this.data<Order>({ op, pathParams }, { signal: opts.signal, timeoutMs: opts.timeoutMs, maxRetries: 0 });
+    } catch (err) {
+      if (opts.signal?.aborted) return null;
+      if (err instanceof CexyApiError || err instanceof CexyConnectionError || err instanceof CexyConfigError) return null;
+      throw err;
     }
   }
 

@@ -681,6 +681,8 @@ export interface paths {
          *     A market buy by `quote_quantity` (a budget) reserves exactly the budget, and the budget includes the taker fee: `filled_quote_quantity + fee_paid <= quote_quantity`. It needs `quote_quantity >= min_notional` and no more decimals than the market's prices (`PRECISION_EXCEEDED`). Its `quantity` and `remaining_quantity` are `0`. It ends `filled` when what is left cannot buy one lot at the last fill price, otherwise `cancelled` with `Insufficient liquidity to fill the remainder` (or `Budget exhausted` with no fill).
          *
          *     Set `client_order_id` to make a retry safe: it is unique per account, so a repeat is refused before any funds move, and `GET /trading/orders/by-client-id/{client_order_id}` recovers the outcome. A retry with a `client_order_id` already used always gets 409 `ALREADY_EXISTS` with the existing order's `order_id` and `status` in `details`, even if the market has since paused or the retry's body differs: the id identifies the intent. `Idempotency-Key` is not honoured here.
+         *
+         *     A key in the market-maker rate tier spends one order action of its per-second budget (429 `RATE_LIMITED` with `details.limit` `order_actions` when it is spent).
          */
         post: operations["place_order"];
         delete?: never;
@@ -700,8 +702,35 @@ export interface paths {
         get: operations["get_order"];
         put?: never;
         post?: never;
-        /** Cancels an order, releasing only what is still reserved. */
+        /**
+         * Cancels an order, releasing only what is still reserved.
+         * @description A cancel spends none of a market-maker key's order budget: only its request limit.
+         */
         delete: operations["cancel_order"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/trading/orders/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Places up to 20 orders in one market, each on its own.
+         * @description Each order goes through exactly what `POST /trading/orders` does, in its own transaction, one after another in the order sent: the batch is not atomic. The response has one result per order, in the order sent: the order (with its fills), or the error a single placement would have answered. The response is 200 whenever the batch was processed, even if every order was refused.
+         *
+         *     Every order needs its own `client_order_id`, so a retry of a batch whose response was lost places nothing twice: each order already placed is answered `ALREADY_EXISTS` with its `order_id` and `status` in `details`, and `GET /trading/orders/by-client-id/{id}` recovers it. `Idempotency-Key` is not honoured here.
+         *
+         *     Refused as a whole, before anything is placed, when it has no orders or more than 20, a `client_order_id` is missing, malformed or repeated within the batch (400), the market does not exist (404), the account may not trade (403), or the batch does not fit the caller's order budget (429). Each order counts as one order action: against a market-maker key's per-second budget, or as one request each against the default limit.
+         */
+        post: operations["place_batch"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -718,7 +747,11 @@ export interface paths {
         get: operations["get_order_by_client_id"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Cancels an order named by the id the client supplied.
+         * @description Exactly as `DELETE /trading/orders/{order_id}` for the order that `client_order_id` names on this account. A cancel spends none of a market-maker key's order budget.
+         */
+        delete: operations["cancel_order_by_client_id"];
         options?: never;
         head?: never;
         patch?: never;
@@ -741,7 +774,7 @@ export interface paths {
          *
          *     An order still being placed when the call starts (status `pending`, for as long as its own placement request runs) is waited for, up to 500 ms per call in total: cancelled if it opens, reported in `already_closed` if it fills or is refused, and in `failed` with code `INVALID_STATE` if it is still being placed at the deadline. Orders placed after the call starts are not part of it. At most 500 orders per call; `has_more` says there are others.
          *
-         *     Limited to 30 calls a minute per account, on top of the general request limit.
+         *     Limited to 30 calls a minute per account (120 from a key in the market-maker rate tier), on top of the general request limit.
          */
         post: operations["cancel_all"];
         delete?: never;
@@ -768,6 +801,28 @@ export interface paths {
          *     A halt does not stop it: cancelling is always allowed. Accounts the exchange quotes from must keep one armed for each market they place orders in, and are refused with `DEAD_MAN_NOT_ARMED` (409, `details.market`) otherwise; such a refusal means "stop quoting", not "retry".
          */
         post: operations["cancel_all_after"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/trading/orders/cancel-batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancels up to 50 orders, each named by its order id or by your client order id.
+         * @description Each entry is cancelled as by `DELETE /trading/orders/{order_id}` or `DELETE /trading/orders/by-client-id/{client_order_id}`, one after another in the order sent; a failure does not stop the rest. The response has one result per entry, in the order sent: the cancelled order, or the error its own cancel would have answered.
+         *
+         *     Refused as a whole, before anything is cancelled, when it has no entries or more than 50, an entry names neither or both ids, or an id is malformed (400), or (default tier) the batch does not fit the caller's request limit (429): there each entry costs one request. A market-maker key's cancels spend none of its order budget.
+         */
+        post: operations["cancel_batch"];
         delete?: never;
         options?: never;
         head?: never;
@@ -952,6 +1007,11 @@ export interface components {
              * @description When it was last used, if ever.
              */
             last_used_at?: string | null;
+            /**
+             * @description Its rate-limit tier: `default`, or `mm` for a market maker's key, which only the exchange sets.
+             * @example default
+             */
+            rate_tier: string;
             /** @description Whether it has been revoked. */
             revoked: boolean;
             /** @description Granted scopes. */
@@ -1080,6 +1140,52 @@ export interface components {
             sequence: number;
             total: components["schemas"]["Amount"];
         };
+        /** @description One order of a batch: an order as for `POST /trading/orders`, without the symbol, and with `client_order_id` required. */
+        BatchOrderItem: {
+            /**
+             * @description Your own identifier, unique per account. Required: a retry of the batch is answered `ALREADY_EXISTS` for every order it already placed, so nothing is placed twice.
+             * @example q-1717171717-001
+             */
+            client_order_id: string;
+            price?: components["schemas"]["Amount"] | null;
+            quantity?: components["schemas"]["Amount"] | null;
+            quote_quantity?: components["schemas"]["Amount"] | null;
+            side: components["schemas"]["OrderSide"];
+            stop_price?: components["schemas"]["Amount"] | null;
+            time_in_force?: components["schemas"]["TimeInForce"] | null;
+            trigger_direction?: components["schemas"]["TriggerDirection"] | null;
+            type: components["schemas"]["OrderType"];
+        };
+        /** @description Places up to 20 orders in one market (Phase 0 B2). */
+        BatchOrderRequest: {
+            /** @description The orders, 1 to 20, placed one after another in this order. */
+            orders: components["schemas"]["BatchOrderItem"][];
+            /**
+             * @description The market every order is placed in.
+             * @example BTC/USDT
+             */
+            symbol: string;
+        };
+        /** @description What a batch did: one result per order, in the order sent. */
+        BatchOrderResponse: {
+            /** @description How many were refused. */
+            failed: number;
+            /** @description How many were accepted. */
+            placed: number;
+            /** @description One per order sent, in the same order. */
+            results: components["schemas"]["BatchOrderResult"][];
+        };
+        /** @description One order's outcome in a batch: exactly one of `order` and `error` is set. */
+        BatchOrderResult: {
+            /** @description Its `client_order_id`, as sent. */
+            client_order_id: string;
+            error?: components["schemas"]["ErrorBody"] | null;
+            /** @description Fills produced on entry, oldest first; empty when refused. */
+            fills: components["schemas"]["FillResponse"][];
+            /** @description Its position in the request, from 0. */
+            index: number;
+            order?: components["schemas"]["OrderResponse"] | null;
+        };
         /** @description Arms, re-arms or disarms the dead-man switch. */
         CancelAllAfterRequest: {
             /**
@@ -1137,6 +1243,38 @@ export interface components {
             failures: components["schemas"]["CancelFailureResponse"][];
             /** @description More open orders exist than one call handles (500). Call again. */
             has_more: boolean;
+        };
+        /** @description One order to cancel: exactly one of `order_id` and `client_order_id`. */
+        CancelBatchItem: {
+            /** @description Your identifier for it. */
+            client_order_id?: string | null;
+            /** @description The order's id. */
+            order_id?: string | null;
+        };
+        /** @description Cancels up to 50 orders, each named by its id or by your own (Phase 0 B2). */
+        CancelBatchRequest: {
+            /** @description The orders, 1 to 50, cancelled one after another in this order. */
+            orders: components["schemas"]["CancelBatchItem"][];
+        };
+        /** @description What a batch cancel did: one result per entry, in the order sent. */
+        CancelBatchResponse: {
+            /** @description How many were cancelled. */
+            cancelled: number;
+            /** @description How many were not. */
+            failed: number;
+            /** @description One per entry sent, in the same order. */
+            results: components["schemas"]["CancelBatchResult"][];
+        };
+        /** @description One entry's outcome in a batch cancel: exactly one of `order` and `error` is set. */
+        CancelBatchResult: {
+            /** @description The client order id, as sent. */
+            client_order_id?: string | null;
+            error?: components["schemas"]["ErrorBody"] | null;
+            /** @description Its position in the request, from 0. */
+            index: number;
+            order?: components["schemas"]["OrderResponse"] | null;
+            /** @description The order id, as sent. */
+            order_id?: string | null;
         };
         /** @description Why one order could not be cancelled. */
         CancelFailureResponse: {
@@ -3666,6 +3804,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Over the request limit, or over a market-maker key's order budget (`details.limit` `order_actions`); `details.retry_after_seconds` says when to retry */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description The market is saturated; retry shortly */
             503: {
                 headers: {
@@ -3752,6 +3899,77 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Over the request limit; `details.retry_after_seconds` says when to retry */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    place_batch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchOrderRequest"];
+            };
+        };
+        responses: {
+            /** @description Each order's outcome, in the order sent */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BatchOrderResponse"];
+                    };
+                };
+            };
+            /** @description No orders or more than 20, or a client_order_id missing, malformed or used twice in the batch; nothing was placed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The account may not trade */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description No such market */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The batch does not fit the order budget or the request limit (`details.retry_after_seconds`); nothing was placed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     get_order_by_client_id: {
@@ -3779,6 +3997,67 @@ export interface operations {
             };
             /** @description No such order on this account */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    cancel_order_by_client_id: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Your identifier */
+                client_order_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cancelled */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["OrderResponse"];
+                    };
+                };
+            };
+            /** @description A malformed client order id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description No such order on this account */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The order is no longer open */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Over the request limit; `details.retry_after_seconds` says when to retry */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3821,7 +4100,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Over 30 calls a minute for this account; `details.retry_after_seconds` says when to retry */
+            /** @description Over 30 calls a minute for this account (120 from a market-maker key); `details.retry_after_seconds` says when to retry */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -3876,6 +4155,50 @@ export interface operations {
             };
             /** @description No such market */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    cancel_batch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CancelBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Each entry's outcome, in the order sent */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["CancelBatchResponse"];
+                    };
+                };
+            };
+            /** @description No entries or more than 50, or an entry without exactly one well-formed id; nothing was cancelled */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The batch does not fit the request limit (`details.retry_after_seconds`); nothing was cancelled. A market-maker key's cancels are not charged to its order budget */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

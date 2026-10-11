@@ -15,6 +15,18 @@ export type AssetNetwork = S["AssetNetworkResponse"];
 export type Balance = S["BalanceResponse"];
 /** An incoming internal transfer still held (see `Balance.held_incoming`). */
 export type HeldIncoming = S["HeldIncomingResponse"];
+/** One order of a `trading.placeOrders` request body, as sent (with its `client_order_id`). */
+export type BatchOrderItem = S["BatchOrderItem"];
+export type BatchOrderRequest = S["BatchOrderRequest"];
+/** The server's raw answer to a batch place; `trading.placeOrders` returns `BatchPlaceResult`. */
+export type BatchOrderResponse = S["BatchOrderResponse"];
+export type BatchOrderResult = S["BatchOrderResult"];
+/** One entry of a batch cancel: exactly one of `order_id` and `client_order_id`. */
+export type CancelBatchItem = S["CancelBatchItem"];
+export type CancelBatchRequest = S["CancelBatchRequest"];
+/** The server's raw answer to a batch cancel; `trading.cancelOrders` returns `BatchCancelResult`. */
+export type CancelBatchResponse = S["CancelBatchResponse"];
+export type CancelBatchResult = S["CancelBatchResult"];
 export type CancelAllRequest = S["CancelAllRequest"];
 export type CancelAllResult = S["CancelAllResponse"];
 /** Result of `trading.cancelAllAfter`: the dead-man switch as just set. */
