@@ -53,7 +53,11 @@ describe("SDK surface covers exactly spec/openapi.sdk.json", () => {
     for (const id of Object.keys(OPERATIONS) as OperationId[]) {
       const { client, calls } = testClient({
         fallback: (r) =>
-          r.url.pathname.startsWith("/api/v1/exports") ? new Response("id,amount\n", { headers: { "content-type": "text/csv" } }) : ok({}),
+          r.url.pathname.startsWith("/api/v1/exports")
+            ? new Response("id,amount\n", { headers: { "content-type": "text/csv" } })
+            : r.url.pathname.endsWith("/orders/batch") || r.url.pathname.endsWith("/orders/cancel-batch")
+              ? ok({ results: (r.body as { orders: Record<string, unknown>[] }).orders.map((o, index) => ({ index, ...o, order: null, fills: [], error: null })) })
+              : ok({}),
       });
       await INVOKE[id](client);
       expect(calls.length, id).toBe(1);

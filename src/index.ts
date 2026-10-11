@@ -53,9 +53,13 @@ export {
   type PlaceOrderResult,
 } from "./resources.js";
 export {
+  BatchResponseError,
   CLIENT_ORDER_ID_PATTERN,
   MAX_BATCH_ORDERS,
   MAX_CANCEL_ENTRIES,
+  batchPlaceErrorInfo,
+  newClientOrderId,
+  type BatchPlaceErrorInfo,
   type BatchCancelResult,
   type BatchOrderInput,
   type BatchOrderOutcome,

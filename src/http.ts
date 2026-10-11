@@ -81,8 +81,9 @@ export interface CallSpec {
 }
 
 /**
- * How a failed attempt ended: `ambiguous` when the server may have acted (a network error after
- * sending, or HTTP 500/502/504), `refused` when it did not (any 4xx, 429 and 503 included).
+ * How a failed attempt ended: `ambiguous` when the server may have acted (any network error, since
+ * fetch cannot tell a failed connect from a lost answer, or any 5xx but 501 and 503), `refused`
+ * when it did not (any 4xx, 429 included, 501 and 503).
  */
 export type AttemptKind = "ambiguous" | "refused";
 
@@ -113,8 +114,11 @@ const REPEAT_SAFE_MUTATIONS: ReadonlySet<OperationId> = new Set<OperationId>([
   "cancel_order_by_client_id",
 ]);
 
-/** HTTP statuses after which the server may or may not have acted. */
-const AMBIGUOUS_STATUS: ReadonlySet<number> = new Set([500, 502, 504]);
+/**
+ * 5xx statuses after which the server did NOT act: 501 (not implemented) and 503 (refused while
+ * unavailable). Every other 5xx (500, 502, 504, Cloudflare's 520 and 524, ...) is ambiguous.
+ */
+const REFUSING_5XX: ReadonlySet<number> = new Set([501, 503]);
 
 /**
  * `details.limit` on a 429 that refused order actions (a market maker's per-second budget). It
@@ -258,8 +262,9 @@ export class Transport {
     }
     if (IDEMPOTENT_OPS.has(spec.op) && spec.idempotencyKey) headers.set("Idempotency-Key", spec.idempotencyKey);
 
-    // Before signing, so a long hold never leaves a stale timestamp on the request.
+    // Both waits come before signing, so a long wait never leaves a stale timestamp on the request.
     if (spec.orderActions && spec.orderActions > 0) await this.#placementGate(spec.orderActions, opts.signal);
+    if (this.config.limiter) await this.config.limiter.acquire(opts.signal, spec.cost ?? 1);
 
     if (info.auth === "api_key") {
       const auth = this.config.authenticator;
@@ -270,8 +275,6 @@ export class Transport {
       }
       await auth.authenticate({ method: info.method, url, headers, body });
     }
-
-    if (this.config.limiter) await this.config.limiter.acquire(opts.signal, spec.cost ?? 1);
 
     const timeoutMs = opts.timeoutMs ?? this.config.timeoutMs;
     const ctrl = new AbortController();
@@ -410,7 +413,7 @@ export function isRetryable(err: unknown): boolean {
 /** How a failed attempt ended, for the batch calls: see `AttemptKind`. */
 export function attemptKind(err: unknown): AttemptKind {
   if (err instanceof CexyConnectionError) return "ambiguous";
-  if (err instanceof CexyApiError && AMBIGUOUS_STATUS.has(err.status)) return "ambiguous";
+  if (err instanceof CexyApiError && err.status >= 500 && err.status <= 599 && !REFUSING_5XX.has(err.status)) return "ambiguous";
   return "refused";
 }
 

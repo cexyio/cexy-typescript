@@ -19,10 +19,14 @@ All notable changes to this project are documented here. The format follows
 - `new CexyClient({ orderActionsPerSecond })`: an optional client-side budget for placements.
 - `ApiKey.rate_tier` (`default` or `mm`), and the generated `BatchOrder*` and `CancelBatch*` types.
 - Shared conformance cases: `trading/batch_orders.json`.
+- An error thrown by `placeOrders` or `placeOrder` carries `clientOrderIds` and `maybePlaced`
+  (`batchPlaceErrorInfo(err)`); `newClientOrderId()` makes ids to save before the call.
+- `BatchResponseError`: a batch 200 that does not match the request (counted as a lost answer).
 
 ### Changed
 - A batch takes one limiter token per order or entry.
 - A 429 with `details.limit` `order_actions` holds only placements for its wait, not the whole client.
+- The client limiter waits before a request is signed, not after.
 
 ## [0.1.0-dev.16] (2026-10-09)
 

@@ -4,11 +4,14 @@
  * `cexy-api-spec/conformance/trading/batch_orders.json`.
  */
 import { assertAmountFields } from "./amounts.js";
-import { CexyConfigError, type ErrorBody } from "./errors.js";
+import { CexyApiError, CexyConfigError, CexyError, type ErrorBody } from "./errors.js";
+import { attemptKind, newId, type AttemptKind } from "./http.js";
 import type {
   BatchOrderItem,
+  BatchOrderResponse,
   BatchOrderResult,
   CancelBatchItem,
+  CancelBatchResponse,
   CancelBatchResult,
   Fill,
   Order,
@@ -22,9 +25,67 @@ export const MAX_BATCH_ORDERS = 20;
 export const MAX_CANCEL_ENTRIES = 50;
 /**
  * The server's rule for a client order id (after it trims surrounding whitespace, which the SDK
- * refuses instead, so the id in a result is always the one sent).
+ * refuses instead, so the id in a result is always the one sent). The SDK also refuses `.` and
+ * `..`, which the server accepts but which cannot name the order in a lookup path.
  */
 export const CLIENT_ORDER_ID_PATTERN = /^[A-Za-z0-9_\-.:]{1,64}$/;
+
+/**
+ * A new `client_order_id` (a UUID), the one `placeOrder` and `placeOrders` generate. Create and
+ * save your ids with it before the call if you may need to reconcile after an error or an abort.
+ */
+export function newClientOrderId(): string {
+  return newId();
+}
+
+/**
+ * Attached to an error thrown by `placeOrders` (or `placeOrder`) once its body was built:
+ * `clientOrderIds` are every id of the body in request order, generated ones included;
+ * `maybePlaced` is false only when every attempt was a definite refusal (nothing was placed).
+ * When it is true, look the orders up with `trading.orderByClientId` before placing again.
+ */
+export interface BatchPlaceErrorInfo {
+  clientOrderIds: string[];
+  maybePlaced: boolean;
+}
+
+/** The `BatchPlaceErrorInfo` on an error thrown by `placeOrders` / `placeOrder`, or null. */
+export function batchPlaceErrorInfo(err: unknown): BatchPlaceErrorInfo | null {
+  if (!err || typeof err !== "object") return null;
+  const e = err as Partial<BatchPlaceErrorInfo>;
+  if (!Array.isArray(e.clientOrderIds) || typeof e.maybePlaced !== "boolean") return null;
+  return { clientOrderIds: [...e.clientOrderIds], maybePlaced: e.maybePlaced };
+}
+
+/**
+ * Returns `err` with `clientOrderIds` and `maybePlaced` set on it (its class kept). A value that
+ * cannot carry them (a primitive, a frozen object) is wrapped in a `CexyError` with it as `cause`.
+ */
+export function withBatchPlaceInfo(err: unknown, clientOrderIds: readonly string[], maybePlaced: boolean): unknown {
+  let target: unknown = err;
+  if (!target || typeof target !== "object" || !Object.isExtensible(target)) {
+    target = new CexyError(`placeOrders failed: ${String(err)}`, { cause: err });
+  }
+  const props = { clientOrderIds: [...clientOrderIds], maybePlaced };
+  for (const [k, value] of Object.entries(props)) {
+    Object.defineProperty(target, k, { value, enumerable: true, configurable: true, writable: true });
+  }
+  return target;
+}
+
+/**
+ * Whether a placement that ended in `err` may have placed something: true after any ambiguous
+ * attempt (the failing one included) and for any failure that is not an HTTP answer (a network
+ * error, an abort, a timeout, an unusable 200). A local configuration error sent nothing.
+ */
+export function maybePlaced(err: unknown, attempts: readonly AttemptKind[]): boolean {
+  if (attempts.includes("ambiguous")) return true;
+  if (err instanceof CexyApiError) return attemptKind(err) === "ambiguous";
+  return !(err instanceof CexyConfigError);
+}
+
+/** A 200 the SDK cannot use: no `data`, or results that do not match the request. */
+export class BatchResponseError extends CexyError {}
 
 const ORDER_AMOUNT_FIELDS = ["price", "quantity", "quote_quantity", "stop_price"] as const;
 const ITEM_FIELDS = [
@@ -132,8 +193,8 @@ function isObject(v: unknown): v is Record<string, unknown> {
 }
 
 export function checkClientOrderId(cid: unknown, where: string): string {
-  if (typeof cid !== "string" || !CLIENT_ORDER_ID_PATTERN.test(cid)) {
-    throw new CexyConfigError(`${where}: client_order_id must be 1 to 64 characters of A-Z a-z 0-9 _ - . :`);
+  if (typeof cid !== "string" || !CLIENT_ORDER_ID_PATTERN.test(cid) || cid === "." || cid === "..") {
+    throw new CexyConfigError(`${where}: client_order_id must be 1 to 64 characters of A-Z a-z 0-9 _ - . : (not "." or "..")`);
   }
   return cid;
 }
@@ -189,6 +250,9 @@ export function buildCancelEntries(entries: readonly CancelOrderEntry[]): Cancel
     if (given(oid) === given(cid) || typeof id !== "string") {
       throw new CexyConfigError(`cancelOrders(): orders[${i}]: give exactly one of order_id and client_order_id`);
     }
+    if (!given(oid) && (id === "." || id === "..")) {
+      throw new CexyConfigError(`cancelOrders(): orders[${i}]: client_order_id must not be "." or ".."`);
+    }
     return given(oid) ? { order_id: id } : { client_order_id: id };
   });
 }
@@ -202,7 +266,45 @@ function statusOf(v: unknown): string | null {
   return typeof v === "string" && v !== "" ? v : null;
 }
 
-/** Reads one place result. A recovered result still needing a lookup has `order_id` or `status` null. */
+/**
+ * Checks that a batch place answer matches the request: one result per order, in order, each
+ * with the index and `client_order_id` sent. Anything else is an unusable answer.
+ */
+export function checkPlaceResponse(data: unknown, items: readonly BatchOrderItem[]): BatchOrderResponse {
+  const results: unknown = isObject(data) ? data["results"] : undefined;
+  if (!Array.isArray(results)) throw new BatchResponseError("placeOrders(): the answer has no results");
+  if (results.length !== items.length) {
+    throw new BatchResponseError(`placeOrders(): ${results.length} results for ${items.length} orders`);
+  }
+  results.forEach((r: unknown, i) => {
+    if (!isObject(r) || r["index"] !== i || r["client_order_id"] !== items[i]?.client_order_id) {
+      throw new BatchResponseError(`placeOrders(): result ${i} does not match the order sent at that position`);
+    }
+  });
+  return data as BatchOrderResponse;
+}
+
+/** As `checkPlaceResponse`, for a batch cancel: one result per entry, each with its index. */
+export function checkCancelResponse(data: unknown, entries: readonly CancelBatchItem[]): CancelBatchResponse {
+  const results: unknown = isObject(data) ? data["results"] : undefined;
+  if (!Array.isArray(results)) throw new BatchResponseError("cancelOrders(): the answer has no results");
+  if (results.length !== entries.length) {
+    throw new BatchResponseError(`cancelOrders(): ${results.length} results for ${entries.length} entries`);
+  }
+  results.forEach((r: unknown, i) => {
+    if (!isObject(r) || r["index"] !== i) {
+      throw new BatchResponseError(`cancelOrders(): result ${i} does not match the entry sent at that position`);
+    }
+  });
+  return data as CancelBatchResponse;
+}
+
+/**
+ * Reads one place result. A recovered result still needing a lookup has `order_id` or `status`
+ * null. An item error other than ALREADY_EXISTS that names an `order_id` (MARKET_UNAVAILABLE when
+ * the market stopped while matching) means the order exists, on any attempt; an item INTERNAL may
+ * follow a committed order, so it is looked up.
+ */
 export function placeFromResult(r: BatchOrderResult, afterAmbiguous: boolean): BatchOrderOutcome {
   const base = { index: r.index, client_order_id: r.client_order_id };
   const fills = r.fills ?? [];
@@ -210,7 +312,12 @@ export function placeFromResult(r: BatchOrderResult, afterAmbiguous: boolean): B
     return { ...base, outcome: "placed", order_id: r.order.id, status: statusOf(r.order.status), order: r.order, fills, error: null };
   }
   const err = r.error ?? null;
-  if (err && afterAmbiguous && err.code === "ALREADY_EXISTS") {
+  const live =
+    err &&
+    ((err.code === "ALREADY_EXISTS" && afterAmbiguous) ||
+      (err.code !== "ALREADY_EXISTS" && detail(err, "order_id") !== null) ||
+      err.code === "INTERNAL");
+  if (err && live) {
     return {
       ...base,
       outcome: "recovered",

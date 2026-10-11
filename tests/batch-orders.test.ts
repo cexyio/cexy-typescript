@@ -9,6 +9,10 @@ import {
   CexyClient,
   CexyConfigError,
   CexyConnectionError,
+  CexyError,
+  BatchResponseError,
+  batchPlaceErrorInfo,
+  newClientOrderId,
   InvalidAmountError,
   type BatchCancelResult,
   type BatchOrderInput,
@@ -51,6 +55,8 @@ function withOrders(data: Item): Item {
 }
 function reply(item: Item, data: (d: Item) => Item = withOrders): Response {
   if ("network_error" in item) throw new TypeError("fetch failed", { cause: new Error("lost response") });
+  if ("text" in item) return new Response(item["text"] as string, { status: item["http_status"], headers: item["headers"] ?? {} });
+  if ("body" in item) return json(item["http_status"], item["body"], item["headers"] ?? {});
   if (item["http_status"] === 200) return json(200, { data: data(item["data"]) });
   return json(item["http_status"], { error: item["error"] }, item["headers"] ?? {});
 }
@@ -62,10 +68,25 @@ interface Sent {
   nonce: string | null;
 }
 
-const EMPTY_BATCH = { placed: 0, failed: 0, cancelled: 0, results: [] };
+/** A batch answer that matches the request: every order placed, or every entry cancelled. */
+function batchAnswer(s: Sent): Item {
+  const sent = (JSON.parse(s.raw!) as { orders: Item[] }).orders;
+  if (s.path === PLACE_PATH) {
+    const results = sent.map((o, i) => ({ index: i, client_order_id: o["client_order_id"], order: order({ id: `o${i}` }), fills: [], error: null }));
+    return { placed: results.length, failed: 0, results };
+  }
+  const results = sent.map((e, i) => ({
+    index: i,
+    order_id: e["order_id"] ?? null,
+    client_order_id: e["client_order_id"] ?? null,
+    order: order({ id: e["order_id"] ?? `o${i}`, status: "cancelled" }),
+    error: null,
+  }));
+  return { cancelled: results.length, failed: 0, results };
+}
 const isBatchPath = (s: Sent) => s.method === "POST" && (s.path === PLACE_PATH || s.path === CANCEL_PATH);
-/** The default answer: an empty batch result for a batch call, else an order. */
-const defaultAnswer = (s: Sent) => json(200, { data: isBatchPath(s) ? EMPTY_BATCH : order({ id: "o_other" }) });
+/** The default answer: a matching batch result for a batch call, else an order. */
+const defaultAnswer = (s: Sent) => json(200, { data: isBatchPath(s) ? batchAnswer(s) : order({ id: "o_other" }) });
 
 /**
  * A fake server on a fake clock. The call under test (`target`) is answered from `attempts`
@@ -160,6 +181,18 @@ function checkCommon(c: Case, srv: ReturnType<typeof server>, res: unknown): voi
   if ("lookups" in e) expect(srv.lookups).toEqual(e["lookups"]);
   if (e["error"] === "connection") {
     expect(res).toBeInstanceOf(CexyConnectionError);
+  } else if (e["error"] === "batch") {
+    // Rule 9: the error keeps its class and carries every cid sent, in order, and maybe_placed.
+    const cause =
+      res instanceof CexyApiError ? res.code : res instanceof CexyConnectionError ? "connection" : res instanceof BatchResponseError || res instanceof CexyError ? "bad_response" : "?";
+    expect(cause).toBe(e["cause"]);
+    const info = batchPlaceErrorInfo(res);
+    expect(info).not.toBeNull();
+    expect(info!.maybePlaced).toBe(e["maybe_placed"]);
+    expect(e["error_cids"]).toBe("sent");
+    const sentCids = (JSON.parse(srv.bodies[0]!) as { orders: Item[] }).orders.map((o) => o["client_order_id"]);
+    expect(info!.clientOrderIds).toEqual(sentCids);
+    if ("error_details_limit" in e) expect((res as CexyApiError).details["limit"]).toBe(e["error_details_limit"]);
   } else if ("error_code" in e && !("results" in e)) {
     expect(res).toBeInstanceOf(CexyApiError);
     expect((res as CexyApiError).code).toBe(e["error_code"]);
@@ -212,7 +245,8 @@ describe("conformance: place", () => {
     for (const i of (e["generated_cid_indexes"] ?? []) as number[]) {
       const sentCid = (JSON.parse(srv.bodies[0]!) as { orders: Item[] }).orders[i]!["client_order_id"] as string;
       expect(sentCid).toMatch(CLIENT_ORDER_ID_PATTERN);
-      expect((res as BatchPlaceResult).results[i]!.client_order_id).toBe(sentCid);
+      const got = e["error"] === "batch" ? batchPlaceErrorInfo(res)!.clientOrderIds[i] : (res as BatchPlaceResult).results[i]!.client_order_id;
+      expect(got).toBe(sentCid);
     }
     if (e["hold"] === "placements") await checkHold(srv, srv.held.at!);
   });
@@ -304,9 +338,7 @@ describe("conformance: cost", () => {
   const answer = (s: Sent) =>
     s.path === "/api/v1/trading/orders/cancel-all"
       ? json(200, { data: { cancelled: [], already_closed: [], failed: [], failures: [], has_more: false } })
-      : s.path === PLACE_PATH || s.path === CANCEL_PATH
-        ? json(200, { data: EMPTY_BATCH })
-        : json(200, { data: order({ id: "o1" }) });
+      : defaultAnswer(s);
 
   it("covers every call in the cost table", () => {
     expect(Object.keys(calls).sort()).toEqual(Object.keys(FIX.cost.calls).sort());
@@ -488,5 +520,77 @@ describe("recovery lookups after an abort", () => {
     expect(lookups).toEqual([`${BY_CID}c1`]);
     expect(res.results.map((r) => r.outcome)).toEqual(["unknown", "placed", "unknown"]);
     expect([res.placed, res.failed, res.unknown]).toEqual([1, 0, 2]);
+  });
+});
+
+describe("errors carry the client order ids (rule 9)", () => {
+  it("newClientOrderId makes ids the server accepts", () => {
+    const a = newClientOrderId();
+    expect(a).toMatch(CLIENT_ORDER_ID_PATTERN);
+    expect(newClientOrderId()).not.toBe(a);
+  });
+
+  it("an abort during the batch call keeps its class and carries the generated ids, maybePlaced true", async () => {
+    const ctrl = new AbortController();
+    const reason = new Error("caller gave up");
+    const srv = server({}, {}, (s) => {
+      if (s.path === PLACE_PATH) ctrl.abort(reason);
+      throw new DOMException("aborted", "AbortError");
+    });
+    const err = await settle(
+      srv.client.trading.placeOrders("BTC/USDT", [{ side: "buy", type: "market", quantity: "1" }, { side: "sell", type: "market", quantity: "1", client_order_id: "mine" }], {
+        signal: ctrl.signal,
+      }),
+    );
+    expect(err).toBe(reason);
+    const info = batchPlaceErrorInfo(err)!;
+    expect(info.maybePlaced).toBe(true);
+    const sent = (JSON.parse(srv.sent[0]!.raw!) as { orders: Item[] }).orders.map((o) => o["client_order_id"]);
+    expect(info.clientOrderIds).toEqual(sent);
+    expect(info.clientOrderIds[1]).toBe("mine");
+  });
+
+  it("a primitive abort reason is wrapped in a CexyError that carries the ids", async () => {
+    const ctrl = new AbortController();
+    const srv = server({}, {}, () => {
+      ctrl.abort("stop");
+      throw new DOMException("aborted", "AbortError");
+    });
+    const err = await settle(srv.client.trading.placeOrders("BTC/USDT", [{ side: "buy", type: "market", quantity: "1", client_order_id: "c1" }], { signal: ctrl.signal }));
+    expect(err).toBeInstanceOf(CexyError);
+    expect((err as Error).cause).toBe("stop");
+    expect(batchPlaceErrorInfo(err)).toEqual({ clientOrderIds: ["c1"], maybePlaced: true });
+  });
+
+  it("placeOrder (single) carries its id too: a 520 is ambiguous, a 403 is not", async () => {
+    const a = server({}, {}, (s) =>
+      s.method === "POST" ? new Response("<html>520</html>", { status: 520 }) : json(404, { error: { code: "NOT_FOUND", message: "no", retryable: false } }),
+    );
+    const e1 = await settle(a.client.trading.placeOrder({ symbol: "BTC/USDT", side: "buy", type: "market", quantity: "1" }, { maxRetries: 0 }));
+    expect((e1 as CexyApiError).code).toBe("HTTP_520");
+    const i1 = batchPlaceErrorInfo(e1)!;
+    expect(i1.maybePlaced).toBe(true);
+    expect(i1.clientOrderIds).toEqual([JSON.parse(a.sent[0]!.raw!).client_order_id]);
+    const b = server({}, {}, () => json(403, { error: { code: "FORBIDDEN", message: "no", retryable: false } }));
+    const e2 = await settle(b.client.trading.placeOrder({ symbol: "BTC/USDT", side: "buy", type: "market", quantity: "1", client_order_id: "x1" }));
+    expect(batchPlaceErrorInfo(e2)).toEqual({ clientOrderIds: ["x1"], maybePlaced: false });
+  });
+
+  it("a local refusal carries nothing", async () => {
+    const srv = server({});
+    const err = await settle(srv.client.trading.placeOrders("BTC/USDT", []));
+    expect(err).toBeInstanceOf(CexyConfigError);
+    expect(batchPlaceErrorInfo(err)).toBeNull();
+  });
+
+  it("a cancel-batch answer that does not match the request is raised", async () => {
+    const srv = server({}, {}, () => json(200, { data: { cancelled: 0, failed: 0, results: [] } }));
+    await expect(srv.client.trading.cancelOrders([{ order_id: "o1" }])).rejects.toBeInstanceOf(BatchResponseError);
+  });
+
+  it("refuses a cancel entry whose client_order_id is a dot segment", async () => {
+    const srv = server({});
+    await expect(srv.client.trading.cancelOrders([{ client_order_id: "." }])).rejects.toBeInstanceOf(CexyConfigError);
+    expect(srv.sent).toEqual([]);
   });
 });

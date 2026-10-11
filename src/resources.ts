@@ -17,6 +17,10 @@ import {
 import {
   buildCancelEntries,
   buildPlaceItems,
+  checkCancelResponse,
+  checkPlaceResponse,
+  maybePlaced,
+  withBatchPlaceInfo,
   cancelFromResult,
   cancelRecovered,
   cancelResult,
@@ -32,6 +36,7 @@ import {
   type CancelOrderEntry,
 } from "./batch.js";
 import {
+  attemptKind,
   isAmbiguous,
   isRetryable,
   newId,
@@ -50,7 +55,6 @@ import type {
   CancelAllAfterResult,
   CancelAllResult,
   CancelAllUntilDoneResult,
-  CancelBatchResponse,
   CancelFailure,
   Candle,
   CursorParams,
@@ -431,13 +435,30 @@ export class TradingResource extends Resource {
     const body: PlaceOrderRequest = { ...order, client_order_id: clientOrderId };
     const maxRetries = opts.maxRetries ?? this.t.config.maxRetries;
     const info = OPERATIONS.place_order;
+    const attempts: AttemptKind[] = [];
+    try {
+      return await this.#placeOrderLoop(body, clientOrderId, maxRetries, info, attempts, opts);
+    } catch (err) {
+      // The caller gets the id and whether the order may exist, whatever the failure.
+      throw withBatchPlaceInfo(err, [clientOrderId], maybePlaced(err, attempts));
+    }
+  }
 
+  async #placeOrderLoop(
+    body: PlaceOrderRequest,
+    clientOrderId: string,
+    maxRetries: number,
+    info: (typeof OPERATIONS)["place_order"],
+    attempts: AttemptKind[],
+    opts: RequestOptions,
+  ): Promise<PlaceOrderResult> {
     for (let attempt = 0; ; attempt++) {
       try {
         const raw = await this.t.attempt({ op: "place_order", body, orderActions: 1 }, opts);
         const data = (raw.data as { data: PlaceOrderResponse }).data;
         return { ...data, client_order_id: clientOrderId, recovered: false };
       } catch (err) {
+        attempts.push(attemptKind(err));
         if (opts.signal?.aborted) throw err;
         const duplicateAfterRetry =
           attempt > 0 && err instanceof ConflictError && (err.code === "ALREADY_EXISTS" || err.code === "IDEMPOTENCY_KEY_CONFLICT");
@@ -548,15 +569,25 @@ export class TradingResource extends Resource {
     if (typeof symbol !== "string" || symbol === "") throw new CexyConfigError("placeOrders(): symbol is required");
     const items = buildPlaceItems(orders, newId);
     const attempts: AttemptKind[] = [];
-    const raw = await this.t.request(
-      { op: "place_batch", body: { symbol, orders: items }, cost: items.length, orderActions: items.length },
-      opts,
-      attempts,
-    );
-    const data = (raw.data as { data: BatchOrderResponse }).data;
+    let data: BatchOrderResponse;
+    try {
+      const raw = await this.t.request(
+        { op: "place_batch", body: { symbol, orders: items }, cost: items.length, orderActions: items.length },
+        opts,
+        attempts,
+      );
+      data = checkPlaceResponse((raw.data as { data?: unknown } | null)?.data, items);
+    } catch (err) {
+      // The request may have been sent: the caller gets every id of the body to reconcile with.
+      throw withBatchPlaceInfo(
+        err,
+        items.map((i) => i.client_order_id),
+        maybePlaced(err, attempts),
+      );
+    }
     const afterAmbiguous = attempts.includes("ambiguous");
     const results: BatchOrderOutcome[] = [];
-    for (const r of data?.results ?? []) {
+    for (const r of data.results) {
       let outcome = placeFromResult(r, afterAmbiguous);
       // The server could not say what took this id: read it once, and never place it again.
       if (needsLookup(outcome)) {
@@ -579,10 +610,10 @@ export class TradingResource extends Resource {
     const entries = buildCancelEntries(orders);
     const attempts: AttemptKind[] = [];
     const raw = await this.t.request({ op: "cancel_batch", body: { orders: entries }, cost: entries.length }, opts, attempts);
-    const data = (raw.data as { data: CancelBatchResponse }).data;
+    const data = checkCancelResponse((raw.data as { data?: unknown } | null)?.data, entries);
     const afterAmbiguous = attempts.includes("ambiguous");
     const results: CancelEntryOutcome[] = [];
-    for (const r of data?.results ?? []) {
+    for (const r of data.results) {
       let outcome = cancelFromResult(r, afterAmbiguous);
       if (outcome.outcome === "recovered") {
         const order = outcome.order_id
