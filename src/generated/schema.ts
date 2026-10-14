@@ -315,7 +315,7 @@ export interface paths {
             cookie?: never;
         };
         /** The caller's futures fills, newest first, 30 days back. */
-        get: operations["fills"];
+        get: operations["futures_fills"];
         put?: never;
         post?: never;
         delete?: never;
@@ -332,7 +332,7 @@ export interface paths {
             cookie?: never;
         };
         /** The caller's futures funding payments, newest first, 30 days back. */
-        get: operations["funding"];
+        get: operations["futures_funding"];
         put?: never;
         post?: never;
         delete?: never;
@@ -352,7 +352,7 @@ export interface paths {
          * Every listed futures market, with its current figures.
          * @description Public. Read from the futures provider at most every few seconds for everyone; `stale` says when what is served is older than it should be.
          */
-        get: operations["markets"];
+        get: operations["futures_markets"];
         put?: never;
         post?: never;
         delete?: never;
@@ -369,7 +369,7 @@ export interface paths {
             cookie?: never;
         };
         /** One futures market. */
-        get: operations["market"];
+        get: operations["futures_market"];
         put?: never;
         post?: never;
         delete?: never;
@@ -386,7 +386,7 @@ export interface paths {
             cookie?: never;
         };
         /** A futures market's candles, 500 at a time in fixed windows. */
-        get: operations["candles"];
+        get: operations["futures_candles"];
         put?: never;
         post?: never;
         delete?: never;
@@ -406,7 +406,7 @@ export interface paths {
          * A futures market's book.
          * @description From the live feed: the first request for a market opens it, and it stays open a minute after the last reader. `stale` is the feed's health, not the book's age; a quiet book can be unchanged and current.
          */
-        get: operations["orderbook"];
+        get: operations["futures_orderbook"];
         put?: never;
         post?: never;
         delete?: never;
@@ -426,7 +426,7 @@ export interface paths {
          * A futures market's recent public trades: side, price, size and time only.
          * @description From the live feed's last 100. The first request for a market opens the feed, so it may return few or none, marked `stale`.
          */
-        get: operations["trades"];
+        get: operations["futures_trades"];
         put?: never;
         post?: never;
         delete?: never;
@@ -443,7 +443,7 @@ export interface paths {
             cookie?: never;
         };
         /** The caller's open futures orders. */
-        get: operations["open_orders"];
+        get: operations["futures_open_orders"];
         put?: never;
         post?: never;
         delete?: never;
@@ -460,7 +460,7 @@ export interface paths {
             cookie?: never;
         };
         /** The caller's futures margin summary and open positions. */
-        get: operations["positions"];
+        get: operations["futures_positions"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2889,7 +2889,7 @@ export interface operations {
             };
         };
     };
-    fills: {
+    futures_fills: {
         parameters: {
             query?: {
                 /** @description The `next_cursor` of the previous page, as given; absent for the newest. A unix time in milliseconds is also accepted: rows older than it. */
@@ -2932,7 +2932,7 @@ export interface operations {
             };
         };
     };
-    funding: {
+    futures_funding: {
         parameters: {
             query?: {
                 /** @description The `next_cursor` of the previous page, as given; absent for the newest. A unix time in milliseconds is also accepted: rows older than it. */
@@ -2975,7 +2975,7 @@ export interface operations {
             };
         };
     };
-    markets: {
+    futures_markets: {
         parameters: {
             query?: never;
             header?: never;
@@ -3006,7 +3006,7 @@ export interface operations {
             };
         };
     };
-    market: {
+    futures_market: {
         parameters: {
             query?: never;
             header?: never;
@@ -3049,7 +3049,7 @@ export interface operations {
             };
         };
     };
-    candles: {
+    futures_candles: {
         parameters: {
             query: {
                 /** @description Unix milliseconds: the window of 500 candles holding this time. Absent: the latest 500. */
@@ -3115,7 +3115,7 @@ export interface operations {
             };
         };
     };
-    orderbook: {
+    futures_orderbook: {
         parameters: {
             query?: {
                 /** @description Levels per side, 1 to 20 (default 20). */
@@ -3170,7 +3170,7 @@ export interface operations {
             };
         };
     };
-    trades: {
+    futures_trades: {
         parameters: {
             query?: {
                 /** @description 1 to 100 (default 50). */
@@ -3216,7 +3216,7 @@ export interface operations {
             };
         };
     };
-    open_orders: {
+    futures_open_orders: {
         parameters: {
             query?: never;
             header?: never;
@@ -3256,7 +3256,7 @@ export interface operations {
             };
         };
     };
-    positions: {
+    futures_positions: {
         parameters: {
             query?: never;
             header?: never;

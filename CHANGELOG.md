@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Spec sync with the server's futures release (2026-10-14): the 9 futures operation ids now
+  start with `futures_` (`futures_fills`, `futures_open_orders`, ...). Method names, wire
+  requests and responses are unchanged. **Breaking for code that reads `OPERATIONS` or the
+  `OperationId` type by a futures key** (for example `OPERATIONS.fills` is now
+  `OPERATIONS.futures_fills`), and for `RetryInfo.operation` checks against a futures id.
+
 ## [0.1.0-dev.17] (2026-10-11)
 
 ### Added

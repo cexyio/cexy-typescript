@@ -869,43 +869,43 @@ export interface FuturesHistoryEnd {
 export class FuturesResource extends Resource {
   /** Every listed futures market and its figures. */
   markets(opts?: RequestOptions): Promise<FuturesMarkets> {
-    return this.data({ op: "markets" }, opts);
+    return this.data({ op: "futures_markets" }, opts);
   }
   /** One futures market, by coin (e.g. `"BTC"`). */
   market(coin: string, opts?: RequestOptions): Promise<FuturesMarket> {
-    return this.data({ op: "market", pathParams: { coin } }, opts);
+    return this.data({ op: "futures_market", pathParams: { coin } }, opts);
   }
   /** The book, up to 20 levels a side. `stale` is the live feed's health, not the book's age. */
-  orderBook(coin: string, params?: Q<"orderbook">, opts?: RequestOptions): Promise<FuturesBook> {
-    return this.data({ op: "orderbook", pathParams: { coin }, query: params }, opts);
+  orderBook(coin: string, params?: Q<"futures_orderbook">, opts?: RequestOptions): Promise<FuturesBook> {
+    return this.data({ op: "futures_orderbook", pathParams: { coin }, query: params }, opts);
   }
   /** Candles (oldest first): the latest, or the window holding `before` (unix ms). */
-  candles(coin: string, params: Q<"candles">, opts?: RequestOptions): Promise<FuturesCandles> {
-    return this.data({ op: "candles", pathParams: { coin }, query: params }, opts);
+  candles(coin: string, params: Q<"futures_candles">, opts?: RequestOptions): Promise<FuturesCandles> {
+    return this.data({ op: "futures_candles", pathParams: { coin }, query: params }, opts);
   }
   /** Recent public trades (newest first, at most 100). */
-  trades(coin: string, params?: Q<"trades">, opts?: RequestOptions): Promise<FuturesTrades> {
-    return this.data({ op: "trades", pathParams: { coin }, query: params }, opts);
+  trades(coin: string, params?: Q<"futures_trades">, opts?: RequestOptions): Promise<FuturesTrades> {
+    return this.data({ op: "futures_trades", pathParams: { coin }, query: params }, opts);
   }
   /** The account's margin summary and open positions. */
   positions(opts?: RequestOptions): Promise<FuturesPositions> {
-    return this.data({ op: "positions" }, opts);
+    return this.data({ op: "futures_positions" }, opts);
   }
   /** The account's open futures orders. */
   openOrders(opts?: RequestOptions): Promise<FuturesOpenOrders> {
-    return this.data({ op: "open_orders" }, opts);
+    return this.data({ op: "futures_open_orders" }, opts);
   }
   /**
    * One page of the account's fills, newest first, 30 days back. A page may be short (even empty)
    * and still have a `next_cursor`: keep paging until it is null, passing it back exactly as given.
    * `iterateFills()` does that, including the busy-provider rule.
    */
-  fills(params?: Q<"fills">, opts?: RequestOptions): Promise<FuturesFills> {
-    return this.data({ op: "fills", query: params }, opts);
+  fills(params?: Q<"futures_fills">, opts?: RequestOptions): Promise<FuturesFills> {
+    return this.data({ op: "futures_fills", query: params }, opts);
   }
   /** One page of the account's funding payments; paged like `fills()`. */
-  funding(params?: Q<"funding">, opts?: RequestOptions): Promise<FuturesFunding> {
-    return this.data({ op: "funding", query: params }, opts);
+  funding(params?: Q<"futures_funding">, opts?: RequestOptions): Promise<FuturesFunding> {
+    return this.data({ op: "futures_funding", query: params }, opts);
   }
   /**
    * Every fill, newest first (`for await`). Ends when `next_cursor` is null, or at once without a
@@ -913,11 +913,11 @@ export class FuturesResource extends Resource {
    * (retryable) when the provider stays busy; the rows yielded until then are not complete.
    * Throws `PagingCursorRepeatedError` (not retryable) when a page with rows repeats the cursor.
    */
-  iterateFills(params?: Q<"fills">, iter?: FuturesIterateOptions): AsyncGenerator<FuturesFill, FuturesHistoryEnd, undefined> {
+  iterateFills(params?: Q<"futures_fills">, iter?: FuturesIterateOptions): AsyncGenerator<FuturesFill, FuturesHistoryEnd, undefined> {
     return this.#history("futures.iterateFills", (cursor) => this.fills({ cursor }, iter), (p) => p.fills, params?.cursor, iter);
   }
   /** Every funding payment, newest first; the same rules as `iterateFills()`. */
-  iterateFunding(params?: Q<"funding">, iter?: FuturesIterateOptions): AsyncGenerator<Funding, FuturesHistoryEnd, undefined> {
+  iterateFunding(params?: Q<"futures_funding">, iter?: FuturesIterateOptions): AsyncGenerator<Funding, FuturesHistoryEnd, undefined> {
     return this.#history("futures.iterateFunding", (cursor) => this.funding({ cursor }, iter), (p) => p.funding, params?.cursor, iter);
   }
 
