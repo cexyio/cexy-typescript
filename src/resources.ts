@@ -923,8 +923,8 @@ export class FuturesResource extends Resource {
    * futures account (the return value says `has_account`). Throws `PagingStalledError`
    * (retryable) when the provider stays busy (an empty same-cursor page or 503
    * `futures_data_unavailable`; the last 503 is its `cause`); the rows yielded until then are not
-   * complete. Worst case per cursor is 1 + `maxBusyRetries` requests and `maxBusyRetries` waits of
-   * up to 30 s.
+   * complete. Worst case per cursor is 1 + `maxBusyRetries` requests and `maxBusyRetries` waits
+   * (a server hint up to `MAX_SERVER_WAIT_MS`, else the backoff).
    * Throws `PagingCursorRepeatedError` (not retryable) when a page with rows repeats the cursor.
    */
   iterateFills(params?: Q<"futures_fills">, iter?: FuturesIterateOptions): AsyncGenerator<FuturesFill, FuturesHistoryEnd, undefined> {
