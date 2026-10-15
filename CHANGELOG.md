@@ -7,6 +7,8 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `CexyApiError.retryAfterHeaderMs`: the `Retry-After` header alone, in ms (null when absent or
+  unusable). `retryAfterMs` is unchanged (the larger of the header and `details.retry_after_seconds`).
 - WebSocket server `error` frames: `CexyWebSocketError` and `ErrorFrame` carry the optional
   `channel`, `details` (only when an object) and `retryAfterMs` (from a non-negative numeric
   `details.retry_after_seconds`). Other types are ignored; local errors leave them unset. The SDK

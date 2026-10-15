@@ -126,6 +126,8 @@ describe("conformance/futures/history_paging.json", () => {
       "hint_from_details_without_header",
       "bad_hint_uses_backoff",
       "zero_hint_uses_backoff",
+      "header_hint_wins_over_large_details_hint",
+      "exhausted_budget_wins_over_large_hint",
       "other_503_uses_request_retries",
       "nonempty_page_repeating_cursor_fails",
       "no_futures_account",
