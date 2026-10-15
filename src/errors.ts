@@ -98,6 +98,8 @@ export class CexyApiError extends CexyError {
    * null when it gave no usable value. Retries honour it on any retryable error (429, 503, ...).
    */
   readonly retryAfterMs: number | null;
+  /** The `Retry-After` header alone, in ms (null when absent or unusable); the futures history helpers rank it first. */
+  readonly retryAfterHeaderMs: number | null;
 
   constructor(init: CexyApiErrorInit) {
     super(init.message);
@@ -108,6 +110,7 @@ export class CexyApiError extends CexyError {
     this.requestId = init.requestId ?? null;
     this.retryable = init.retryable;
     this.retryAfterMs = retryAfterMs(init.headers, init.details);
+    this.retryAfterHeaderMs = retryAfterHeaderMs(init.headers);
   }
 
   override toString(): string {
@@ -202,18 +205,20 @@ export class PagingCursorRepeatedError extends CexyError {
 /**
  * A futures history iterator (`futures.iterateFills()` / `iterateFunding()`) stopped because the
  * server kept answering an empty page whose `next_cursor` equals the cursor sent (the provider is
- * busy), more than `maxBusyRetries` times in a row. Local and retryable: the rows already yielded
- * are NOT the complete history. Resume later with `{ cursor }` set to `cursor`.
+ * busy), or answered 503 `futures_data_unavailable`, more than `maxBusyRetries` times in a row.
+ * Local and retryable: the rows already yielded are NOT the complete history. Resume later with
+ * `{ cursor }` set to `cursor`. When the last busy answer was a 503, it is the `cause`
+ * (`details.reason` stays reachable).
  */
 export class PagingStalledError extends CexyError {
   readonly code = CLIENT_ERROR_CODES.PAGING_STALLED;
   readonly retryable = true;
-  /** The cursor that stalled; pass it as `cursor` to resume from the same place. */
-  readonly cursor: string;
+  /** The cursor that stalled (undefined when the first request stalled); pass it as `cursor` to resume from the same place. */
+  readonly cursor: string | undefined;
   /** Requests made for that cursor (the first plus the retries). */
   readonly attempts: number;
-  constructor(operation: string, cursor: string, attempts: number) {
-    super(`${operation}: the server is busy (the same empty page ${attempts} times in a row); retry later from this cursor`);
+  constructor(operation: string, cursor: string | undefined, attempts: number, cause?: unknown) {
+    super(`${operation}: the server is busy (${attempts} busy answers in a row); retry later from this cursor`, cause === undefined ? undefined : { cause });
     this.cursor = cursor;
     this.attempts = attempts;
   }
@@ -240,21 +245,31 @@ export const MAX_SERVER_WAIT_MS = 120_000;
  * decide (the transport then fails fast instead of waiting).
  */
 export function retryAfterMs(headers: Headers | undefined, details: Record<string, unknown> | undefined): number | null {
-  let best: number | null = null;
+  const h = retryAfterHeaderMs(headers);
+  const d = retryAfterDetailsMs(details);
+  return h === null ? d : d === null ? h : Math.max(h, d);
+}
+
+/** `Retry-After` alone (seconds or HTTP date) in ms; null when absent or unusable. */
+export function retryAfterHeaderMs(headers: Headers | undefined): number | null {
   const h = headers?.get("retry-after")?.trim();
-  if (h) {
-    if (/^\d+(\.\d+)?$/.test(h)) {
-      const ms = Number(h) * 1000;
-      if (Number.isFinite(ms)) best = ms;
-    } else if (/[a-z]/i.test(h)) {
-      const at = Date.parse(h);
-      if (Number.isFinite(at)) best = Math.max(0, at - Date.now());
-    }
+  if (!h) return null;
+  if (/^\d+(\.\d+)?$/.test(h)) {
+    const ms = Number(h) * 1000;
+    return Number.isFinite(ms) ? ms : null;
   }
+  if (/[a-z]/i.test(h)) {
+    const at = Date.parse(h);
+    if (Number.isFinite(at)) return Math.max(0, at - Date.now());
+  }
+  return null;
+}
+
+/** `details.retry_after_seconds` alone in ms; null when absent or unusable. */
+export function retryAfterDetailsMs(details: Record<string, unknown> | undefined): number | null {
   const d = details?.["retry_after_seconds"];
   const ds = typeof d === "number" ? d : typeof d === "string" && /^\d+(\.\d+)?$/.test(d.trim()) ? Number(d) : NaN;
-  if (Number.isFinite(ds) && ds >= 0 && Number.isFinite(ds * 1000)) best = Math.max(best ?? 0, ds * 1000);
-  return best;
+  return Number.isFinite(ds) && ds >= 0 && Number.isFinite(ds * 1000) ? ds * 1000 : null;
 }
 
 /**

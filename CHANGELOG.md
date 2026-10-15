@@ -6,7 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `CexyApiError.retryAfterHeaderMs`: the `Retry-After` header alone, in ms (null when absent or
+  unusable). `retryAfterMs` is unchanged (the larger of the header and `details.retry_after_seconds`).
+- WebSocket server `error` frames: `CexyWebSocketError` and `ErrorFrame` carry the optional
+  `channel`, `details` (only when an object) and `retryAfterMs` (from a non-negative numeric
+  `details.retry_after_seconds`). Other types are ignored; local errors leave them unset. The SDK
+  does not retry on `retryAfterMs`; it is for the caller.
+
 ### Changed
+- `futures.iterateFills()` / `iterateFunding()`: a 503 with `details.reason`
+  `futures_data_unavailable` is now a busy answer on any request (the first included). It shares the
+  `maxBusyRetries` budget (default 3) with the empty same-cursor page, is not retried by the
+  transport inside the helper (so `maxRetries: 0` still rides it out, at most 1 + `maxBusyRetries`
+  requests per cursor), and waits the server hint exactly (`Retry-After`, else
+  `details.retry_after_seconds`, no jitter), else the normal backoff. **A long provider outage now
+  ends iteration with `PagingStalledError` (`PAGING_STALLED`, retryable, the last 503 as `cause`)
+  instead of `SERVICE_UNAVAILABLE`.** `PagingStalledError.cursor` is `undefined` when the first
+  request stalled. Other 503s, 5xx and 429 keep the normal request retries.
 - Spec sync with the server's futures release (2026-10-14): the 9 futures operation ids now
   start with `futures_` (`futures_fills`, `futures_open_orders`, ...). Method names, wire
   requests and responses are unchanged. **Breaking for code that reads `OPERATIONS` or the

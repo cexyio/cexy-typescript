@@ -13,6 +13,7 @@ import {
   PagingCursorRepeatedError,
   PagingStalledError,
   RateLimitError,
+  retryAfterDetailsMs,
 } from "./errors.js";
 import {
   buildCancelEntries,
@@ -845,12 +846,21 @@ export const FUTURES_PAGING_MAX_RETRIES = 3;
 /** Options of `futures.iterateFills()` / `iterateFunding()`. */
 export interface FuturesIterateOptions extends IterateOptions, RequestOptions {
   /**
-   * How many times in a row to re-ask the same cursor when the server answers an empty page whose
-   * `next_cursor` equals the cursor sent (the provider is busy), waiting the client's normal
-   * backoff before each. Default 3; then `PagingStalledError` (code `PAGING_STALLED`). Independent
-   * of `maxRetries` (a client with request retries off still rides out a busy provider).
+   * How many times in a row to re-ask the same cursor when the provider is busy: the server
+   * answers an empty page whose `next_cursor` equals the cursor sent, or 503
+   * `futures_data_unavailable` (also on the first request). The wait is the server's hint
+   * (`Retry-After`, else `details.retry_after_seconds`, used exactly), else the client's normal
+   * backoff. Default 3; then `PagingStalledError` (code `PAGING_STALLED`, the 503 as its `cause`).
+   * 0 fails at once. Independent of `maxRetries`: the transport does not retry that 503 here, so a
+   * client with request retries off still rides out a busy provider, with at most
+   * 1 + `maxBusyRetries` requests per cursor.
    */
   maxBusyRetries?: number;
+}
+
+/** A 503 `futures_data_unavailable`: the history iterators' busy answer (the transport must not retry it there). */
+function isBusyUnavailable(err: unknown): err is CexyApiError {
+  return err instanceof CexyApiError && err.status === 503 && err.details["reason"] === "futures_data_unavailable";
 }
 
 /** What a futures history iterator returns when it ends (the generator's return value). */
@@ -863,7 +873,8 @@ export interface FuturesHistoryEnd {
  * Futures market data (public) and the account's own futures data (an API key with `read`).
  * Every response carries `stale` (and `as_of` where the data has an age). When nothing usable is
  * cached and the data cannot be read, the API answers 503 `SERVICE_UNAVAILABLE` (retryable,
- * `details.reason` `futures_data_unavailable`); the SDK retries it like any retryable error.
+ * `details.reason` `futures_data_unavailable`); the SDK retries it like any retryable error,
+ * except inside `iterateFills()` / `iterateFunding()`, which treat it as a busy answer.
  * Account reads answer `has_account: false` when the account has no futures account.
  */
 export class FuturesResource extends Resource {
@@ -910,22 +921,29 @@ export class FuturesResource extends Resource {
   /**
    * Every fill, newest first (`for await`). Ends when `next_cursor` is null, or at once without a
    * futures account (the return value says `has_account`). Throws `PagingStalledError`
-   * (retryable) when the provider stays busy; the rows yielded until then are not complete.
+   * (retryable) when the provider stays busy (an empty same-cursor page or 503
+   * `futures_data_unavailable`; the last 503 is its `cause`); the rows yielded until then are not
+   * complete. Worst case per cursor is 1 + `maxBusyRetries` requests and `maxBusyRetries` waits
+   * (a server hint up to `MAX_SERVER_WAIT_MS`, else the backoff).
    * Throws `PagingCursorRepeatedError` (not retryable) when a page with rows repeats the cursor.
    */
   iterateFills(params?: Q<"futures_fills">, iter?: FuturesIterateOptions): AsyncGenerator<FuturesFill, FuturesHistoryEnd, undefined> {
-    return this.#history("futures.iterateFills", (cursor) => this.fills({ cursor }, iter), (p) => p.fills, params?.cursor, iter);
+    return this.#history("futures.iterateFills", (cursor) => this.fills({ cursor }, { ...iter, noRetry: isBusyUnavailable }), (p) => p.fills, params?.cursor, iter);
   }
   /** Every funding payment, newest first; the same rules as `iterateFills()`. */
   iterateFunding(params?: Q<"futures_funding">, iter?: FuturesIterateOptions): AsyncGenerator<Funding, FuturesHistoryEnd, undefined> {
-    return this.#history("futures.iterateFunding", (cursor) => this.funding({ cursor }, iter), (p) => p.funding, params?.cursor, iter);
+    return this.#history("futures.iterateFunding", (cursor) => this.funding({ cursor }, { ...iter, noRetry: isBusyUnavailable }), (p) => p.funding, params?.cursor, iter);
   }
 
   /**
    * The paging rules of conformance/futures/history_paging.json: the cursor is opaque and sent
    * back verbatim; short or empty pages go on until `next_cursor` is null; an EMPTY page whose
-   * `next_cursor` equals the cursor just sent means busy: back off and re-ask the same cursor,
-   * at most `maxBusyRetries` times in a row, then fail with `PagingStalledError`; a page WITH rows
+   * `next_cursor` equals the cursor just sent, or a 503 `futures_data_unavailable` (on any
+   * request, the first included), means busy: wait (the server hint exactly, else backoff) and
+   * re-ask the same cursor, at most `maxBusyRetries` times in a row (one counter for both kinds,
+   * reset by a page that advances), then fail with `PagingStalledError` (the 503 as its cause);
+   * the transport does not retry that 503 itself. Any other retryable error keeps the normal
+   * request retries. A page WITH rows
    * that repeats the cursor is a server error: its rows are yielded, then
    * `PagingCursorRepeatedError` (never loop).
    */
@@ -943,7 +961,21 @@ export class FuturesResource extends Resource {
     let yielded = 0;
     let busy = 0;
     for (;;) {
-      const page = await fetchPage(cursor);
+      let page: P;
+      try {
+        page = await fetchPage(cursor);
+      } catch (err) {
+        if (!isBusyUnavailable(err)) throw err;
+        if (busy >= maxBusy) throw new PagingStalledError(name, cursor, busy + 1, err);
+        // The hint is exact (no jitter): Retry-After first, then details.retry_after_seconds; a
+        // zero hint is skipped so a busy provider never gets an immediate retry.
+        const positive = (ms: number | null) => (ms !== null && ms > 0 ? ms : null);
+        const hint = positive(err.retryAfterHeaderMs) ?? positive(retryAfterDetailsMs(err.details));
+        if (hint !== null && hint > MAX_SERVER_WAIT_MS) throw err;
+        await this.t.config.sleep(hint ?? this.t.retryDelay(busy, null), iter.signal);
+        busy++;
+        continue;
+      }
       if (!page.has_account) return { has_account: false };
       const got = rows(page);
       const items = Array.isArray(got) ? got : [];

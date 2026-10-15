@@ -42,8 +42,24 @@ export class CexyWebSocketError extends CexyError {
   readonly channels: string[];
   /** When `subscribe()` rejects because every channel was refused: each channel with its own error. */
   readonly rejected: SubscribeRejection[];
-  constructor(code: string, message: string, fromServer = false, channels: string[] = [], rejected: SubscribeRejection[] = []) {
+  /** The channel the server frame names (`error.channel`), when it does. Empty on local errors. */
+  readonly channel?: string;
+  /** The server frame's `error.details`, when it is an object. Empty on local errors. */
+  readonly details?: Record<string, unknown>;
+  /** When to retry, from `details.retry_after_seconds` (ms); informational, the SDK never retries on it. */
+  readonly retryAfterMs?: number;
+  constructor(
+    code: string,
+    message: string,
+    fromServer = false,
+    channels: string[] = [],
+    rejected: SubscribeRejection[] = [],
+    extra: { channel?: string; details?: Record<string, unknown>; retryAfterMs?: number } = {},
+  ) {
     super(message);
+    if (extra.channel !== undefined) this.channel = extra.channel;
+    if (extra.details !== undefined) this.details = extra.details;
+    if (extra.retryAfterMs !== undefined) this.retryAfterMs = extra.retryAfterMs;
     this.code = code;
     this.fromServer = fromServer;
     this.channels = channels;
@@ -900,7 +916,15 @@ export class CexyWebSocket extends TypedEmitter<CexyWebSocketEvents> {
         const code = typeof frame["code"] === "string" ? frame["code"] : "UNKNOWN";
         const message = typeof frame["message"] === "string" ? frame["message"] : code;
         const f: ErrorFrame = { type: "error", code, message, id: typeof frame["id"] === "string" ? frame["id"] : null };
-        const err = new CexyWebSocketError(code, message, true);
+        // Optional fields: anything of the wrong type is ignored, never an error.
+        const rawDetails = frame["details"];
+        if (typeof frame["channel"] === "string") f.channel = frame["channel"];
+        if (rawDetails !== null && typeof rawDetails === "object" && !Array.isArray(rawDetails)) {
+          f.details = rawDetails as Record<string, unknown>;
+          const secs = f.details["retry_after_seconds"];
+          if (typeof secs === "number" && Number.isFinite(secs) && secs >= 0) f.retryAfterMs = secs * 1000;
+        }
+        const err = new CexyWebSocketError(code, message, true, [], [], f);
         const id = f.id ?? null;
         if (typeof frame["challenge"] === "string") this.#challenge = frame["challenge"];
         if (id !== null) {
