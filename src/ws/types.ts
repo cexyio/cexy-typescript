@@ -42,6 +42,12 @@ export interface ErrorFrame {
   code: string;
   message?: string;
   id?: string | null;
+  /** The channel a refusal concerns, when the server names it. */
+  channel?: string;
+  /** Extra detail from the server (only when it is a JSON object). */
+  details?: Record<string, unknown>;
+  /** `details.retry_after_seconds` in ms, when it is a non-negative number. */
+  retryAfterMs?: number;
 }
 
 /** `[price, quantity]`, both decimal strings. */

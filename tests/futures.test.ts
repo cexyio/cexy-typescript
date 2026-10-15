@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CLIENT_ERROR_CODES, PagingCursorRepeatedError, PagingStalledError, isRetryable } from "../src/index.js";
+import { CLIENT_ERROR_CODES, CexyApiError, PagingCursorRepeatedError, PagingStalledError, isRetryable } from "../src/index.js";
 import { json, loadJson, ok, testClient } from "./helpers.js";
 
 interface PagingPage {
@@ -10,6 +10,8 @@ interface PagingPage {
 }
 interface PagingCase {
   id: string;
+  client?: { max_retries?: number };
+  max_busy_retries?: number;
   pages: PagingPage[];
   expect: {
     ids?: string[];
@@ -17,7 +19,9 @@ interface PagingCase {
     ids_before_error?: string[];
     requests: number;
     sleeps: number;
-    min_sleep_seconds?: number;
+    sleep_seconds?: number[];
+    backoff_sleeps?: number;
+    error_cause_reason?: string;
     encoded_query_of_request_2?: string;
     error_code?: string;
     error_retryable?: boolean;
@@ -30,11 +34,13 @@ const paging = loadJson<{ operation: string; max_busy_retries: number; cases: Pa
 );
 
 async function runPaging(kind: "fills" | "funding", c: PagingCase) {
-  // A case with an error answer needs the normal request-retry policy; the others run with request
-  // retries off, so busy pages are ridden out by maxBusyRetries alone.
+  // A case with an error answer runs with the case's request retries (default: the client's 3);
+  // the others run with request retries off, so busy pages are ridden out by maxBusyRetries alone.
   const withHttpError = c.pages.some((p) => p.http_status !== undefined);
+  const maxBusy = c.max_busy_retries ?? paging.max_busy_retries;
   const { client, calls, sleeps } = testClient({
-    maxRetries: withHttpError ? 3 : 0,
+    random: () => 0.1234,
+    maxRetries: c.client?.max_retries ?? (withHttpError ? 3 : 0),
     replies: c.pages.map((p) => (p.http_status !== undefined ? json(p.http_status, p.response, p.headers ?? {}) : ok(p.response))),
     fallback: () => new Error("more requests than the case has pages"),
   });
@@ -42,7 +48,7 @@ async function runPaging(kind: "fills" | "funding", c: PagingCase) {
   let error: unknown;
   let end: { has_account: boolean } | undefined;
   try {
-    const it: AsyncGenerator<any, { has_account: boolean }> = kind === "fills" ? client.futures.iterateFills() : client.futures.iterateFunding();
+    const it: AsyncGenerator<any, { has_account: boolean }> = kind === "fills" ? client.futures.iterateFills(undefined, { maxBusyRetries: maxBusy }) : client.futures.iterateFunding(undefined, { maxBusyRetries: maxBusy });
     for (;;) {
       const r = await it.next();
       if (r.done) {
@@ -65,21 +71,33 @@ async function runPaging(kind: "fills" | "funding", c: PagingCase) {
   });
   expect(calls[0]!.url.search).toBe("");
   expect(sleeps.length).toBe(c.expect.sleeps);
-  if (c.expect.min_sleep_seconds !== undefined) for (const ms of sleeps) expect(ms).toBeGreaterThanOrEqual(c.expect.min_sleep_seconds * 1000);
+  // The random source makes every backoff wait a non-round number of ms; a hinted wait is exact
+  // (whole seconds in the fixture, no jitter), so the two kinds tell apart.
+  const hinted = sleeps.filter((ms) => ms % 1000 === 0);
+  if (c.expect.sleep_seconds !== undefined) expect(hinted).toEqual(c.expect.sleep_seconds.map((s) => s * 1000));
+  if (c.expect.backoff_sleeps !== undefined) expect(sleeps.length - hinted.length).toBe(c.expect.backoff_sleeps);
   if (c.expect.encoded_query_of_request_2 !== undefined) {
     expect(calls[1]!.url.search).toBe(`?${c.expect.encoded_query_of_request_2}`);
   }
 
   if (c.expect.error_code) {
     expect(rows.map((r) => r.id)).toEqual(c.expect.ids_before_error);
-    const cls = c.expect.error_code === "PAGING_STALLED" ? PagingStalledError : PagingCursorRepeatedError;
-    expect(error).toBeInstanceOf(cls);
-    const e = error as PagingStalledError | PagingCursorRepeatedError;
-    expect(e.code).toBe(c.expect.error_code);
-    expect(e.retryable).toBe(c.expect.error_retryable);
-    expect(isRetryable(e)).toBe(c.expect.error_retryable);
-    expect(e.cursor).toBe(c.pages[c.pages.length - 1]!.request_cursor);
-    if (e instanceof PagingStalledError) expect(e.attempts).toBe(paging.max_busy_retries + 1);
+    if (c.expect.error_code === "SERVICE_UNAVAILABLE") {
+      // Not a busy answer: the transport's request retries applied and the API error comes through.
+      expect(error).toBeInstanceOf(CexyApiError);
+      expect((error as CexyApiError).code).toBe("SERVICE_UNAVAILABLE");
+      expect(isRetryable(error)).toBe(c.expect.error_retryable);
+    } else {
+      const cls = c.expect.error_code === "PAGING_STALLED" ? PagingStalledError : PagingCursorRepeatedError;
+      expect(error).toBeInstanceOf(cls);
+      const e = error as PagingStalledError | PagingCursorRepeatedError;
+      expect(e.code).toBe(c.expect.error_code);
+      expect(e.retryable).toBe(c.expect.error_retryable);
+      expect(isRetryable(e)).toBe(c.expect.error_retryable);
+      expect(e.cursor ?? null).toBe(c.pages[c.pages.length - 1]!.request_cursor);
+      if (e instanceof PagingStalledError) expect(e.attempts).toBe(maxBusy + 1);
+      if (c.expect.error_cause_reason !== undefined) expect((e.cause as CexyApiError).details["reason"]).toBe(c.expect.error_cause_reason);
+    }
   } else {
     expect(error).toBeUndefined();
     if (c.expect.ids) expect(rows.map((r) => r.id)).toEqual(c.expect.ids);
@@ -99,10 +117,25 @@ describe("conformance/futures/history_paging.json", () => {
       "unavailable_mid_paging_retried",
       "busy_provider_same_cursor_retried",
       "busy_provider_gives_up_after_max_retries",
+      "unavailable_busy_retries_off",
+      "unavailable_on_first_page",
+      "unavailable_busy_gives_up",
+      "busy_and_unavailable_share_budget",
+      "zero_busy_retries_fails_at_once",
+      "hint_header_before_details",
+      "hint_from_details_without_header",
+      "bad_hint_uses_backoff",
+      "other_503_uses_request_retries",
       "nonempty_page_repeating_cursor_fails",
       "no_futures_account",
     ]);
-    expect(paging.funding_cases.map((c) => c.id)).toEqual(["funding_short_pages_until_null", "funding_busy_then_rows", "funding_no_account"]);
+    expect(paging.funding_cases.map((c) => c.id)).toEqual([
+      "funding_short_pages_until_null",
+      "funding_busy_then_rows",
+      "funding_unavailable_busy_retries_off",
+      "funding_unavailable_on_first_page",
+      "funding_no_account",
+    ]);
   });
 
   it.each(paging.cases.map((c) => [c.id, c] as const))("fills: %s", (_id, c) => runPaging("fills", c));

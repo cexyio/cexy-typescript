@@ -33,6 +33,11 @@ export interface RequestOptions {
    * not honour it, and their safety comes from `client_order_id` (see `placeOrder`).
    */
   idempotencyKey?: string;
+  /**
+   * Internal: an error for which this call must not be retried by the transport (the caller
+   * handles it). Other retryable errors keep the normal policy.
+   */
+  noRetry?: (err: unknown) => boolean;
 }
 
 /** Passed to the `onRetry` hook before the SDK waits and retries. */
@@ -163,7 +168,7 @@ export class Transport {
         return await this.attempt({ ...spec, idempotencyKey }, opts);
       } catch (err) {
         attempts?.push(attemptKind(err));
-        if (attempt >= maxRetries || !isRetryable(err) || opts.signal?.aborted) throw err;
+        if (attempt >= maxRetries || !isRetryable(err) || opts.noRetry?.(err) || opts.signal?.aborted) throw err;
         await this.backoff(spec.op, info, attempt, err, idempotencyKey, opts.signal);
       }
     }
