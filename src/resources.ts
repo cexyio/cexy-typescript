@@ -967,8 +967,10 @@ export class FuturesResource extends Resource {
       } catch (err) {
         if (!isBusyUnavailable(err)) throw err;
         if (busy >= maxBusy) throw new PagingStalledError(name, cursor, busy + 1, err);
-        // The hint is exact (no jitter): Retry-After first, then details.retry_after_seconds.
-        const hint = err.retryAfterHeaderMs ?? retryAfterDetailsMs(err.details);
+        // The hint is exact (no jitter): Retry-After first, then details.retry_after_seconds; a
+        // zero hint is skipped so a busy provider never gets an immediate retry.
+        const positive = (ms: number | null) => (ms !== null && ms > 0 ? ms : null);
+        const hint = positive(err.retryAfterHeaderMs) ?? positive(retryAfterDetailsMs(err.details));
         if (hint !== null && hint > MAX_SERVER_WAIT_MS) throw err;
         await this.t.config.sleep(hint ?? this.t.retryDelay(busy, null), iter.signal);
         busy++;
