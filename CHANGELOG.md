@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-dev.18] (2026-10-15)
+
 ### Added
 - `CexyApiError.retryAfterHeaderMs`: the `Retry-After` header alone, in ms (null when absent or
   unusable). `retryAfterMs` is unchanged (the larger of the header and `details.retry_after_seconds`).
@@ -29,6 +31,7 @@ All notable changes to this project are documented here. The format follows
   requests and responses are unchanged. **Breaking for code that reads `OPERATIONS` or the
   `OperationId` type by a futures key** (for example `OPERATIONS.fills` is now
   `OPERATIONS.futures_fills`), and for `RetryInfo.operation` checks against a futures id.
+- Built against cexy-api-spec `0bd25ad` (futures busy 503 paging, WS error `channel`/`details`).
 
 ## [0.1.0-dev.17] (2026-10-11)
 
