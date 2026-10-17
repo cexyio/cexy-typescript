@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-dev.19] (2026-10-17)
+
 ### Changed
 - `cancelAll({ untilDone: true })`: the retry codes are now exactly `SERVICE_UNAVAILABLE`,
   `MARKET_UNAVAILABLE` and `CONCURRENT_MODIFICATION`. **`INVALID_STATE` is no longer retried**: it
@@ -14,6 +16,7 @@ All notable changes to this project are documented here. The format follows
   94a2735 or later; against an older backend a pending order's `INVALID_STATE` returns at once.
   Single cancel and cancel-batch are unchanged. Texts updated: the server cancels a pending order
   at once. Spec sync (generated types).
+- Built against cexy-api-spec `09c9ae0` (cancel-intent texts, cancel-all loop retry codes).
 
 ## [0.1.0-dev.18] (2026-10-15)
 
