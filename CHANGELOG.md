@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- `cancelAll({ untilDone: true })`: the retry codes are now exactly `SERVICE_UNAVAILABLE`,
+  `MARKET_UNAVAILABLE` and `CONCURRENT_MODIFICATION`. **`INVALID_STATE` is no longer retried**: it
+  means an order taken off the book that cannot be cancelled yet, and is returned in `failures`.
+  A market that stays down returns only when the time budget (default 2 min) ends. Needs backend
+  94a2735 or later; against an older backend a pending order's `INVALID_STATE` returns at once.
+  Single cancel and cancel-batch are unchanged. Texts updated: the server cancels a pending order
+  at once. Spec sync (generated types).
+
 ## [0.1.0-dev.18] (2026-10-15)
 
 ### Added

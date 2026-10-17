@@ -44,12 +44,12 @@ function clockedClient(replies: Reply[], fallback?: Reply, rateLimit: { requests
 }
 
 const round = (data: Record<string, unknown>) => ok({ failures: [], ...data });
-const pending = (ids: string[], code = "INVALID_STATE") => ({
+const pending = (ids: string[], code = "MARKET_UNAVAILABLE") => ({
   cancelled: [],
   already_closed: [],
   failed: ids,
   has_more: false,
-  failures: ids.map((order_id) => ({ order_id, code, message: "still being placed" })),
+  failures: ids.map((order_id) => ({ order_id, code, message: "market restarting" })),
 });
 
 /** A conformance response item: a `data` object (200), or an error with `http_status`. */
@@ -204,6 +204,26 @@ describe("cancelAll", () => {
     expect(err).toBeInstanceOf(CancelAllInterruptedError);
     expect((err as CancelAllInterruptedError).error).toBeInstanceOf(ForbiddenError);
     expect((err as CancelAllInterruptedError).partial).toMatchObject({ cancelled: ["o1"], rounds: 2 });
+  });
+
+  it.each(["MARKET_UNAVAILABLE", "CONCURRENT_MODIFICATION", "SERVICE_UNAVAILABLE"])("%s is retried, then resolves", async (code) => {
+    const { client, calls, sleeps } = clockedClient([
+      round(pending(["a"], code)),
+      round({ cancelled: ["a"], already_closed: [], failed: [], has_more: false }),
+    ]);
+    const out = await client.trading.cancelAll({ symbol: null, untilDone: true });
+    expect(calls.length).toBe(2);
+    expect(sleeps).toEqual([1000]);
+    expect(out).toMatchObject({ stopped: "done", cancelled: ["a"], failed: [] });
+  });
+
+  it("INVALID_STATE is not retried: it is returned after one request", async () => {
+    const { client, calls, sleeps } = clockedClient([round(pending(["a"], "INVALID_STATE"))]);
+    const out = await client.trading.cancelAll({ symbol: null, untilDone: true });
+    expect(calls.length).toBe(1);
+    expect(sleeps).toEqual([]);
+    expect(out).toMatchObject({ stopped: "done", rounds: 1, failed: ["a"] });
+    expect(out.failures[0]?.code).toBe("INVALID_STATE");
   });
 
   it("an order that ends cancelled or already closed is never also reported failed", async () => {

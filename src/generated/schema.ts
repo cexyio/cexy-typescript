@@ -772,7 +772,7 @@ export interface paths {
          *
          *     Best-effort: a failure on one order does not stop the rest, and every outcome is reported. A panic-button endpoint that stops at the first problem is worse than useless. A stop waiting for its trigger (`pending_trigger`) is cancelled too and its reservation released, so nothing fires into the market after the call.
          *
-         *     An order still being placed when the call starts (status `pending`, for as long as its own placement request runs) is waited for, up to 500 ms per call in total: cancelled if it opens, reported in `already_closed` if it fills or is refused, and in `failed` with code `INVALID_STATE` if it is still being placed at the deadline. Orders placed after the call starts are not part of it. At most 500 orders per call; `has_more` says there are others.
+         *     An order still being placed when the call starts (status `pending`, while its own placement request runs or its match is retried) is cancelled at once, like an open order, and listed in `cancelled`; the call does not wait for it. One whose market is restarting is in `failed` with code `MARKET_UNAVAILABLE`, as an open order would be: call again. Orders placed after the call starts are not part of it. At most 500 orders per call; `has_more` says there are others.
          *
          *     Limited to 30 calls a minute per account (120 from a key in the market-maker rate tier), on top of the general request limit.
          */
@@ -1278,7 +1278,7 @@ export interface components {
         };
         /** @description Why one order could not be cancelled. */
         CancelFailureResponse: {
-            /** @description The error code of the attempt, as in any error response: e.g. `INVALID_STATE` for an order still being placed when the wait ran out, or `MARKET_UNAVAILABLE`. */
+            /** @description The error code of the attempt, as in any error response: e.g. `MARKET_UNAVAILABLE` for an order whose market is restarting, or `CONCURRENT_MODIFICATION`. */
             code: string;
             /** @description Its message. */
             message: string;
@@ -3890,7 +3890,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description The order is no longer open */
+            /** @description The order is no longer open, or it was taken off the book and cannot be cancelled yet (`INVALID_STATE`) */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4047,7 +4047,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description The order is no longer open */
+            /** @description The order is no longer open, or it was taken off the book and cannot be cancelled yet (`INVALID_STATE`) */
             409: {
                 headers: {
                     [name: string]: unknown;

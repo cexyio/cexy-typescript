@@ -69,7 +69,9 @@ their reservations, so nothing fires into the market after the call.
 
 One call handles at most 500 orders and puts each in exactly one list: `cancelled`, `already_closed`
 (it filled, was refused or was cancelled elsewhere first; not an error) or `failed`, with the reason in
-`failures` (`INVALID_STATE` for an order still being placed). `has_more: true` means more orders remain.
+`failures` (`MARKET_UNAVAILABLE` while the market restarts, `CONCURRENT_MODIFICATION` when one order's
+write budget is used up, `INVALID_STATE` for an order taken off the book that cannot be cancelled yet).
+The server cancels a `pending` order at once. `has_more: true` means more orders remain.
 To let the SDK repeat the call for you:
 
 ```ts
@@ -78,7 +80,9 @@ const res = await cexy.trading.cancelAll({ symbol: null, untilDone: true });
 if (res.stopped !== "done" || res.failed.length) console.warn("left over:", res.failures);
 ```
 
-`untilDone` repeats while `has_more` is true or a failure is `INVALID_STATE` / `SERVICE_UNAVAILABLE`.
+`untilDone` repeats while `has_more` is true or a failure code is `SERVICE_UNAVAILABLE`, `MARKET_UNAVAILABLE`
+or `CONCURRENT_MODIFICATION`. `INVALID_STATE` is returned, not retried. A market that stays down returns
+only when the time budget (default 2 min) ends.
 After a call without progress it waits 1, 2, 4, 8, then 15 s, and it stops after `maxRounds` calls
 (default 20) or before a wait would pass `timeBudgetMs` (default 120 000). Every round is exactly one
 request (the loop owns the retries, so it never sends more than `maxRounds` requests): a 429 round waits its
