@@ -377,8 +377,11 @@ export interface CancelAllAfterParams {
   timeoutMs: number;
 }
 
-/** Failure codes that clear up on their own: an order still being placed, a state read failure. */
-const CANCEL_RETRY_CODES = new Set(["INVALID_STATE", "SERVICE_UNAVAILABLE"]);
+/**
+ * Failure codes that clear up on their own: a state read failure, a market restarting, an
+ * order's write budget used up. `INVALID_STATE` is not among them: it is returned.
+ */
+const CANCEL_RETRY_CODES = new Set(["SERVICE_UNAVAILABLE", "MARKET_UNAVAILABLE", "CONCURRENT_MODIFICATION"]);
 /** Waits after rounds without progress, in seconds; the last value repeats. */
 const CANCEL_BACKOFF_S = [1, 2, 4, 8, 15];
 
@@ -709,15 +712,18 @@ export class TradingResource extends Resource {
    *
    * One call handles at most 500 orders. Every order it handled is in exactly one list:
    * `cancelled`; `already_closed` (it filled, was refused or was cancelled elsewhere first:
-   * not an error); or `failed`, with the reason in `failures` (`INVALID_STATE` for an order
-   * still being placed when the server's 500 ms wait ran out). `has_more` says more orders
-   * remain: call again.
+   * not an error); or `failed`, with the reason in `failures` (`MARKET_UNAVAILABLE` while the
+   * market restarts, `CONCURRENT_MODIFICATION` when one order's write budget is used up,
+   * `INVALID_STATE` for an order taken off the book that cannot be cancelled yet). A `pending`
+   * order is cancelled at once by the server. `has_more` says more orders remain: call again.
    *
    * With `untilDone: true` the SDK does that for you. It repeats while `has_more` is true or a
-   * failure is `INVALID_STATE` / `SERVICE_UNAVAILABLE`. After a call that made no progress it
+   * failure code is `SERVICE_UNAVAILABLE`, `MARKET_UNAVAILABLE` or `CONCURRENT_MODIFICATION`. After a call that made no progress it
    * waits 1, 2, 4, 8 and then 15 s, starting over after any progress. It stops after
    * `maxRounds` calls or before a wait would pass `timeBudgetMs`, and returns the merged
-   * result with `rounds` and `stopped`. Other failure codes are returned, never retried.
+   * result with `rounds` and `stopped`. Other failure codes, `INVALID_STATE` included, are
+   * returned, never retried. A market that stays down returns only when the time budget
+   * (default 2 min) ends.
    * In this mode every round is exactly one HTTP request (the loop owns the retries, so it
    * never sends more than `maxRounds` requests): a 429 round waits the server's Retry-After
    * (without advancing the backoff), another retryable error (5xx, network) takes the next
